@@ -20,15 +20,9 @@ def setup_logger(name="app", level="Info"):
     :param level: 日志级别
     :return: 配置好的日志记录器
     """
-    if level == "Debug":
-        level = logging.DEBUG
-    elif level == "Info":
-        level = logging.INFO
-    elif level == "Warning":
-        level = logging.WARNING
-    elif level == "Error":
-        level = logging.ERROR
-    else:
+    if isinstance(level, str):
+        level = getattr(logging, level.upper(), logging.INFO)
+    elif not isinstance(level, int):
         level = logging.INFO
     
     logger = logging.getLogger(name)
@@ -51,6 +45,9 @@ def setup_logger(name="app", level="Info"):
         # 添加处理器到日志记录器
         logger.addHandler(console_handler)
         logger.addHandler(file_handler)
+    else:
+        for handler in logger.handlers:
+            handler.setLevel(level)
 
     return logger
 
