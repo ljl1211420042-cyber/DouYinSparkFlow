@@ -60,8 +60,10 @@ def get_config():
 
 def sanitize_cookies(cookies):
     for cookie in cookies:
-        if "sameSite" in cookie:
-            cookie.pop("sameSite")  # 移除 sameSite 字段，Playwright 可能不支持该字段
+        if "expirationDate" in cookie:
+            cookie["expires"] = cookie.pop("expirationDate")
+        for key in ("sameSite", "hostOnly", "session", "storeId"):
+            cookie.pop(key, None)  # 移除 Cookie-Editor 字段，Playwright 可能不支持
     return cookies
 
 
