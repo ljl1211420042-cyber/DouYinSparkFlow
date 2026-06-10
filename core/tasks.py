@@ -1,9 +1,10 @@
 import traceback
+import os
 from utils.logger import setup_logger
 from utils.config import get_config, get_userData
 from core.msg_builder import build_message, build_message_with_openai
 from core.browser import get_browser
-from playwright.sync_api import Response
+from playwright.sync_api import Response, TimeoutError as PlaywrightTimeoutError
 import time
 import json
 
@@ -64,6 +65,45 @@ def retry_operation(name, operation, retries=3, delay=2, *args, **kwargs):
                 raise
 
 
+def save_page_diagnostics(page, username, reason):
+    """保存失败页面，便于在 GitHub Actions artifact 中判断登录/风控/页面改版。"""
+    os.makedirs("logs", exist_ok=True)
+    safe_username = "".join(ch if ch.isalnum() else "_" for ch in username)
+    timestamp = time.strftime("%Y%m%d_%H%M%S")
+    base_path = os.path.join("logs", f"{timestamp}_{safe_username}_{reason}")
+
+    try:
+        page.screenshot(path=f"{base_path}.png", full_page=True)
+    except Exception as e:
+        logger.warning(f"保存页面截图失败: {e}")
+
+    try:
+        with open(f"{base_path}.html", "w", encoding="utf-8") as html_file:
+            html_file.write(page.content())
+    except Exception as e:
+        logger.warning(f"保存页面 HTML 失败: {e}")
+
+    try:
+        logger.error(f"页面诊断信息: title={page.title()}, url={page.url}")
+    except Exception:
+        logger.error(f"页面诊断信息: url={page.url}")
+
+
+def wait_and_activate_friend_list(page, username, target_selector):
+    """等待好友列表加载，并点击第一个好友项激活列表。"""
+    try:
+        first_friend = page.locator(target_selector).first()
+        first_friend.wait_for(state="visible", timeout=config["browserTimeout"])
+        first_friend.click()
+        return True
+    except PlaywrightTimeoutError:
+        logger.error(
+            f"账号 {username} 好友列表在 {config['browserTimeout']}ms 内未加载出好友项"
+        )
+        save_page_diagnostics(page, username, "friend_list_not_ready")
+        return False
+
+
 def scroll_and_select_user(page, username, targets):
     """尝试滚动并查找用户名"""
     # 定义目标元素和滚动容器的选择器
@@ -86,10 +126,9 @@ def scroll_and_select_user(page, username, targets):
 
     logger.debug(f"账号 {username} 进入好友列表页面")
 
-    # 确保第一个好友元素加载完成
-    first_friend_selector = 'xpath=//*[@id="sub-app"]/div/div/div[2]/div[2]/div/div/div[1]/div/div/div/ul/div/div/div[1]/li/div'
-    page.wait_for_selector(first_friend_selector)
-    page.locator(first_friend_selector).click()  # 点击第一个好友，确保列表激活
+    if not wait_and_activate_friend_list(page, username, target_selector):
+        logger.warning(f"账号 {username} 好友列表不可用，跳过该账号任务")
+        return
 
     logger.debug(f"账号 {username} 已激活好友列表，开始滚动查找目标好友")
 
@@ -298,6 +337,3 @@ def runTasks():
         browser.close()
         
         playwright.stop()
-
-        
-
