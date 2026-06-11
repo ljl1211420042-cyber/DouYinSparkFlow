@@ -1,3 +1,4 @@
+
 import traceback
 import os
 from utils.logger import setup_logger
@@ -92,7 +93,7 @@ def save_page_diagnostics(page, username, reason):
 def wait_and_activate_friend_list(page, username, target_selector):
     """等待好友列表加载，并点击第一个好友项激活列表。"""
     try:
-        first_friend = page.locator(target_selector).first()
+        first_friend = page.locator(target_selector).first
         first_friend.wait_for(state="visible", timeout=config["browserTimeout"])
         first_friend.click()
         return True
