@@ -18,6 +18,11 @@ logger = setup_logger(level=config.get("logLevel", "Info"))
 matchMode = config.get("matchMode", "nickname")
 userIDDict = {}
 
+AUTHENTICATION_PAGE_MARKERS = ("text=扫码登录", "text=登录/注册")
+FRIENDS_TAB_SELECTORS = (
+    'xpath=//*[@id="sub-app"]/div/div/div[1]/div[2]',
+)
+
 def handle_response(response: Response):
     """
     只监听你要的那个接口响应
@@ -90,8 +95,54 @@ def save_page_diagnostics(page, username, reason):
         logger.error(f"页面诊断信息: url={page.url}")
 
 
+def is_authentication_page(page):
+    """Return True when the creator center is showing its login screen."""
+    for selector in AUTHENTICATION_PAGE_MARKERS:
+        marker = page.locator(selector)
+        if marker.count() > 0 and marker.is_visible():
+            return True
+    return False
+
+
+def raise_if_authentication_required(page, username):
+    if not is_authentication_page(page):
+        return
+
+    logger.error(
+        f"账号 {username} 的抖音 Cookie 已失效，页面已跳转到登录界面"
+    )
+    save_page_diagnostics(page, username, "authentication_required")
+    raise RuntimeError(
+        f"账号 {username} 的抖音 Cookie 已失效，请重新登录并更新 GitHub Secret"
+    )
+
+
+def wait_for_friends_tab(page, username):
+    """Wait until either the friend tab or the login page becomes visible."""
+    deadline = time.monotonic() + config["browserTimeout"] / 1000
+
+    while time.monotonic() < deadline:
+        raise_if_authentication_required(page, username)
+
+        for selector in FRIENDS_TAB_SELECTORS:
+            locator = page.locator(selector)
+            if locator.count() > 0 and locator.first.is_visible():
+                return locator.first
+
+        page.wait_for_timeout(250)
+
+    raise_if_authentication_required(page, username)
+    logger.error(
+        f"账号 {username} 在 {config['browserTimeout']}ms 内未加载出好友入口"
+    )
+    save_page_diagnostics(page, username, "friend_tab_not_ready")
+    raise RuntimeError(f"账号 {username} 未加载出好友入口，请检查页面诊断附件")
+
+
 def wait_and_activate_friend_list(page, username, target_selector):
     """等待好友列表加载，并点击第一个好友项激活列表。"""
+    raise_if_authentication_required(page, username)
+
     try:
         first_friend = page.locator(target_selector).first
         first_friend.wait_for(state="visible", timeout=config["browserTimeout"])
@@ -108,7 +159,6 @@ def wait_and_activate_friend_list(page, username, target_selector):
 def scroll_and_select_user(page, username, targets):
     """尝试滚动并查找用户名"""
     # 定义目标元素和滚动容器的选择器
-    friends_tab_selector = 'xpath=//*[@id="sub-app"]/div/div/div[1]/div[2]'
     target_selector = 'xpath=//*[@id="sub-app"]/div/div[1]/div[2]/div[2]//div[contains(@class, "semi-list-item-body semi-list-item-body-flex-start")]'
     scrollable_friends_selector = 'xpath=//*[@id="sub-app"]/div/div[1]/div[2]/div[2]/div/div/div[3]/div/div/div/ul/div'
     
@@ -122,8 +172,8 @@ def scroll_and_select_user(page, username, targets):
 
     logger.debug(f"账号 {username} 点击进入好友标签页")
     # 点击好友标签页
-    page.wait_for_selector(friends_tab_selector)
-    page.locator(friends_tab_selector).click()
+    friends_tab = wait_for_friends_tab(page, username)
+    friends_tab.click()
 
     logger.debug(f"账号 {username} 进入好友列表页面")
 
@@ -221,9 +271,18 @@ def scroll_and_select_user(page, username, targets):
                 # 不 break，继续去滚动以触发后续内容
 
             # 4. 滚动容器
-            scrollable_element = page.locator(
-                scrollable_friends_selector
-            ).element_handle()
+            try:
+                scrollable_element = page.locator(
+                    scrollable_friends_selector
+                ).element_handle(timeout=3000)
+            except PlaywrightTimeoutError:
+                logger.warning(
+                    f"账号 {username} 未在 3000ms 内定位到好友滚动容器，改用鼠标滚轮滚动"
+                )
+                page.mouse.wheel(0, 900)
+                empty_scroll_count += 1
+                time.sleep(1.5)
+                continue
             
             if scrollable_element:
                 # [修复] 记录滚动前的 scrollTop，用于检测是否真的滚动了
