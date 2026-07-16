@@ -38,6 +38,57 @@ class FakePage:
         return self.friend
 
 
+class FakeNavigationPage:
+    def goto(self, url):
+        self.url = url
+
+
+class FakeContext:
+    def __init__(self, page, refreshed_cookies):
+        self.page = page
+        self.refreshed_cookies = refreshed_cookies
+        self.closed = False
+        self.added_cookies = None
+
+    def set_default_navigation_timeout(self, timeout):
+        self.navigation_timeout = timeout
+
+    def set_default_timeout(self, timeout):
+        self.default_timeout = timeout
+
+    def new_page(self):
+        return self.page
+
+    def add_cookies(self, cookies):
+        self.added_cookies = cookies
+
+    def cookies(self):
+        return self.refreshed_cookies
+
+    def close(self):
+        self.closed = True
+
+
+class FakeBrowser:
+    def __init__(self, context=None):
+        self.context = context
+        self.closed = False
+
+    def new_context(self):
+        return self.context
+
+    def close(self):
+        self.closed = True
+
+
+class FakePlaywright:
+    def __init__(self):
+        self.stopped = False
+
+    def stop(self):
+        self.stopped = True
+
+
 class WaitAndActivateFriendListTests(unittest.TestCase):
     def test_uses_current_conversation_list_selectors(self):
         self.assertIn("item-header-name-", tasks.CONVERSATION_ITEM_SELECTOR)
@@ -165,6 +216,115 @@ class AuthenticationPageTests(unittest.TestCase):
             page, "tester", "authentication_required"
         )
 
+
+class RefreshedCookieStateTests(unittest.TestCase):
+    def setUp(self):
+        self.original_config = tasks.config
+        self.original_user_data = tasks.userData
+
+    def tearDown(self):
+        tasks.config = self.original_config
+        tasks.userData = self.original_user_data
+
+    def test_validation_only_returns_refreshed_cookies_without_sending(self):
+        refreshed = [
+            {
+                "name": "sessionid",
+                "value": "rotated",
+                "domain": ".douyin.com",
+                "path": "/",
+            }
+        ]
+        context = FakeContext(
+            page=FakeNavigationPage(), refreshed_cookies=refreshed
+        )
+        browser = FakeBrowser(context)
+        tasks.config = {
+            **self.original_config,
+            "browserTimeout": 1234,
+            "taskRetryTimes": 1,
+            "validateOnly": True,
+        }
+
+        with patch.object(tasks, "retry_operation"):
+            with patch.object(tasks, "validate_account_session") as validate:
+                with patch.object(tasks, "scroll_and_select_user") as sender:
+                    result = tasks.do_user_task(
+                        browser,
+                        "tester",
+                        [{"name": "old"}],
+                        ["target"],
+                    )
+
+        self.assertEqual(result, refreshed)
+        validate.assert_called_once_with(context.page, "tester")
+        sender.assert_not_called()
+        self.assertTrue(context.closed)
+
+    def test_complete_run_writes_refreshed_cookie_state(self):
+        refreshed = [
+            {
+                "name": "sessionid",
+                "value": "rotated",
+                "domain": ".douyin.com",
+                "path": "/",
+            }
+        ]
+        browser = FakeBrowser()
+        playwright = FakePlaywright()
+        tasks.userData = [
+            {
+                "unique_id": "123",
+                "username": "tester",
+                "cookies": [],
+                "targets": [],
+            }
+        ]
+
+        with patch.dict(
+            tasks.os.environ,
+            {"COOKIE_STATE_OUTPUT": "/tmp/refreshed-state.json"},
+            clear=False,
+        ):
+            with patch.object(tasks, "get_browser", return_value=(playwright, browser)):
+                with patch.object(tasks, "do_user_task", return_value=refreshed):
+                    with patch.object(tasks, "write_cookie_state") as write_state:
+                        tasks.runTasks()
+
+        write_state.assert_called_once_with(
+            "/tmp/refreshed-state.json", {"COOKIES_123": refreshed}
+        )
+        self.assertTrue(browser.closed)
+        self.assertTrue(playwright.stopped)
+
+    def test_failed_run_does_not_write_cookie_state(self):
+        browser = FakeBrowser()
+        playwright = FakePlaywright()
+        tasks.userData = [
+            {
+                "unique_id": "123",
+                "username": "tester",
+                "cookies": [],
+                "targets": [],
+            }
+        ]
+
+        with patch.dict(
+            tasks.os.environ,
+            {"COOKIE_STATE_OUTPUT": "/tmp/refreshed-state.json"},
+            clear=False,
+        ):
+            with patch.object(tasks, "get_browser", return_value=(playwright, browser)):
+                with patch.object(
+                    tasks, "do_user_task", side_effect=RuntimeError("failed")
+                ):
+                    with patch.object(tasks, "write_cookie_state") as write_state:
+                        with self.assertRaisesRegex(RuntimeError, "failed"):
+                            tasks.runTasks()
+
+        write_state.assert_not_called()
+        self.assertTrue(browser.closed)
+        self.assertTrue(playwright.stopped)
 
 if __name__ == "__main__":
     unittest.main()

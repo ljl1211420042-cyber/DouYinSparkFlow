@@ -6,6 +6,7 @@ from utils.config import get_config, get_userData
 from core.msg_builder import build_message, build_message_with_openai
 from core.browser import get_browser
 from playwright.sync_api import Response, TimeoutError as PlaywrightTimeoutError
+from utils.cookie_state import cookie_key, write_cookie_state
 import time
 import json
 
@@ -168,6 +169,14 @@ def wait_and_activate_friend_list(page, username, target_selector):
         raise RuntimeError(
             f"账号 {username} 好友列表未加载，任务未发送任何消息"
         )
+
+
+def validate_account_session(page, username):
+    """Validate authentication and conversation loading without sending."""
+    friends_tab = wait_for_friends_tab(page, username)
+    friends_tab.click()
+    wait_and_activate_friend_list(page, username, CONVERSATION_ITEM_SELECTOR)
+    logger.info(f"账号 {username} 登录和好友列表验证通过，未发送消息")
 
 
 def raise_for_missing_targets(username, remaining_targets):
@@ -341,64 +350,67 @@ def scroll_and_select_user(page, username, targets):
 
 def do_user_task(browser, username, cookies, targets):
         context = browser.new_context()  # 每个任务使用独立的上下文
-        context.set_default_navigation_timeout(config["browserTimeout"])  # 设置导航超时时间为 120 秒
-        context.set_default_timeout(config["browserTimeout"])  # 设置所有操作的默认超时时间为 120 秒
+        try:
+            context.set_default_navigation_timeout(config["browserTimeout"])
+            context.set_default_timeout(config["browserTimeout"])
 
-        page = context.new_page()
-        
-        if matchMode == "short_id":  # 使用抖音号进行匹配
-            page.on("response", handle_response)
-        
-        # 打开抖音创作者中心
-        retry_operation(
-            "打开抖音创作者中心",
-            page.goto,
-            retries=config["taskRetryTimes"],
-            delay=5,
-            url="https://creator.douyin.com/",
-        )
-        # 注入 Cookie
-        context.add_cookies(cookies)
+            page = context.new_page()
 
-        # 导航到消息页面
-        retry_operation(
-            "导航到消息页面",
-            page.goto,
-            retries=config["taskRetryTimes"],
-            delay=5,
-            url="https://creator.douyin.com/creator-micro/data/following/chat",
-        )
+            if matchMode == "short_id":  # 使用抖音号进行匹配
+                page.on("response", handle_response)
 
-        logger.debug(f"账号 {username} 开始发送消息")
-        # 滚动并选择用户
-        for username in scroll_and_select_user(page, username, targets):
-            logger.debug(f"账号 {username} 已选中好友 {username} 发送消息")
-            # 等待聊天输入框元素加载完成，使用更稳定的属性选择器
-            chat_input_selector = "xpath=//div[contains(@class, 'chat-input-')]"
-            page.wait_for_selector(chat_input_selector, timeout=config["browserTimeout"])
-            chat_input = page.locator(chat_input_selector)
-
-            # 在 chat-input-dccKiL 中输入内容
-            message = build_message()
-            for line in message.split("\\n"):
-                chat_input.type(line)  # 输入每一行
-                # 如果不是最后一行，模拟 Shift+Enter 插入换行
-                if line != message.split("\\n")[-1]:
-                    chat_input.press("Shift+Enter")  # 模拟 Shift+Enter 插入换行
-
-            logger.debug(
-                f"账号 {username} 准备发送消息给好友 {username}：\n\t{message}"
+            retry_operation(
+                "打开抖音创作者中心",
+                page.goto,
+                retries=config["taskRetryTimes"],
+                delay=5,
+                url="https://creator.douyin.com/",
             )
-            logger.debug(f"账号 {username} 给好友 {username} 发送消息完成")
-            # 模拟按下回车键发送消息
-            chat_input.press("Enter")
-            time.sleep(2)  # 发送完等待一会儿
+            context.add_cookies(cookies)
 
-        context.close()  # 任务完成后关闭上下文
+            retry_operation(
+                "导航到消息页面",
+                page.goto,
+                retries=config["taskRetryTimes"],
+                delay=5,
+                url="https://creator.douyin.com/creator-micro/data/following/chat",
+            )
+
+            if config.get("validateOnly", False):
+                validate_account_session(page, username)
+            else:
+                logger.debug(f"账号 {username} 开始发送消息")
+                for username in scroll_and_select_user(page, username, targets):
+                    logger.debug(f"账号 {username} 已选中好友 {username} 发送消息")
+                    chat_input_selector = (
+                        "xpath=//div[contains(@class, 'chat-input-')]"
+                    )
+                    page.wait_for_selector(
+                        chat_input_selector, timeout=config["browserTimeout"]
+                    )
+                    chat_input = page.locator(chat_input_selector)
+
+                    message = build_message()
+                    for line in message.split("\\n"):
+                        chat_input.type(line)
+                        if line != message.split("\\n")[-1]:
+                            chat_input.press("Shift+Enter")
+
+                    logger.debug(
+                        f"账号 {username} 准备发送消息给好友 {username}：\n\t{message}"
+                    )
+                    logger.debug(f"账号 {username} 给好友 {username} 发送消息完成")
+                    chat_input.press("Enter")
+                    time.sleep(2)
+
+            return context.cookies()
+        finally:
+            context.close()
 
 
 def runTasks():
     playwright, browser = get_browser()
+    refreshed_cookie_state = {}
     try:
         # 检查是否启用多任务和任务数量
         # 创建信号量以限制并发任务数量
@@ -416,8 +428,18 @@ def runTasks():
             username = user.get("username", "未知用户")
             logger.info(f"开始处理账号 {username}")
             # 创建任务
-            do_user_task(browser, username, cookies, targets)
+            refreshed_cookies = do_user_task(
+                browser, username, cookies, targets
+            )
+            refreshed_cookie_state[cookie_key(user["unique_id"])] = (
+                refreshed_cookies
+            )
             logger.info(f"账号 {username} 任务完成")
+
+        cookie_state_output = os.getenv("COOKIE_STATE_OUTPUT", "")
+        if cookie_state_output and refreshed_cookie_state:
+            write_cookie_state(cookie_state_output, refreshed_cookie_state)
+            logger.info("已写出刷新后的 Cookie 状态")
     finally:
         # 关闭浏览器实例
         browser.close()
