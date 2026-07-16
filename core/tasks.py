@@ -20,7 +20,15 @@ userIDDict = {}
 
 AUTHENTICATION_PAGE_MARKERS = ("text=扫码登录", "text=登录/注册")
 FRIENDS_TAB_SELECTORS = (
+    'role=tab[name="朋友私信"]',
     'xpath=//*[@id="sub-app"]/div/div/div[1]/div[2]',
+)
+CONVERSATION_ITEM_SELECTOR = (
+    'xpath=//li[contains(@class, "semi-list-item")]'
+    '[.//span[contains(@class, "item-header-name-")]]'
+)
+CONVERSATION_SCROLL_SELECTOR = (
+    'xpath=//span[contains(@class, "item-header-name-")]/ancestor::ul[1]'
 )
 
 def handle_response(response: Response):
@@ -153,14 +161,15 @@ def wait_and_activate_friend_list(page, username, target_selector):
             f"账号 {username} 好友列表在 {config['browserTimeout']}ms 内未加载出好友项"
         )
         save_page_diagnostics(page, username, "friend_list_not_ready")
-        return False
+        raise RuntimeError(
+            f"账号 {username} 好友列表未加载，任务未发送任何消息"
+        )
 
 
 def scroll_and_select_user(page, username, targets):
     """尝试滚动并查找用户名"""
-    # 定义目标元素和滚动容器的选择器
-    target_selector = 'xpath=//*[@id="sub-app"]/div/div[1]/div[2]/div[2]//div[contains(@class, "semi-list-item-body semi-list-item-body-flex-start")]'
-    scrollable_friends_selector = 'xpath=//*[@id="sub-app"]/div/div[1]/div[2]/div[2]/div/div/div[3]/div/div/div/ul/div'
+    target_selector = CONVERSATION_ITEM_SELECTOR
+    scrollable_friends_selector = CONVERSATION_SCROLL_SELECTOR
     
     # [修复] 使用模糊匹配 no-more-tip- 前缀，不再依赖精确哈希后缀
     # 同时增加文本匹配作为兜底
@@ -177,9 +186,7 @@ def scroll_and_select_user(page, username, targets):
 
     logger.debug(f"账号 {username} 进入好友列表页面")
 
-    if not wait_and_activate_friend_list(page, username, target_selector):
-        logger.warning(f"账号 {username} 好友列表不可用，跳过该账号任务")
-        return
+    wait_and_activate_friend_list(page, username, target_selector)
 
     logger.debug(f"账号 {username} 已激活好友列表，开始滚动查找目标好友")
 

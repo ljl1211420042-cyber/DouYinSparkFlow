@@ -1,5 +1,6 @@
 import unittest
 from unittest.mock import patch
+from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 
 from core import tasks
 
@@ -20,9 +21,14 @@ class FakeLocator:
         self.clicked = True
 
 
+class TimeoutLocator(FakeLocator):
+    def wait_for(self, state, timeout):
+        raise PlaywrightTimeoutError("friend list timeout")
+
+
 class FakePage:
-    def __init__(self):
-        self.friend = FakeLocator()
+    def __init__(self, friend=None):
+        self.friend = friend or FakeLocator()
         self.selector = None
 
     def locator(self, selector):
@@ -33,6 +39,10 @@ class FakePage:
 
 
 class WaitAndActivateFriendListTests(unittest.TestCase):
+    def test_uses_current_conversation_list_selectors(self):
+        self.assertIn("item-header-name-", tasks.CONVERSATION_ITEM_SELECTOR)
+        self.assertIn("item-header-name-", tasks.CONVERSATION_SCROLL_SELECTOR)
+
     def test_uses_playwright_first_locator_property(self):
         page = FakePage()
         original_config = tasks.config
@@ -46,6 +56,23 @@ class WaitAndActivateFriendListTests(unittest.TestCase):
         self.assertEqual(page.selector, "friend-selector")
         self.assertEqual(page.friend.waited, ("visible", 1234))
         self.assertTrue(page.friend.clicked)
+
+    def test_friend_list_timeout_fails_the_account_task(self):
+        page = FakePage(friend=TimeoutLocator())
+        original_config = tasks.config
+        tasks.config = {"browserTimeout": 1234}
+        try:
+            with patch.object(tasks, "save_page_diagnostics") as diagnostics:
+                with self.assertRaisesRegex(RuntimeError, "好友列表"):
+                    tasks.wait_and_activate_friend_list(
+                        page, "tester", "friend-selector"
+                    )
+        finally:
+            tasks.config = original_config
+
+        diagnostics.assert_called_once_with(
+            page, "tester", "friend_list_not_ready"
+        )
 
 
 class MarkerLocator:
