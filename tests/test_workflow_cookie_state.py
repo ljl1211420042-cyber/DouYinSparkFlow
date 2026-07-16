@@ -45,6 +45,10 @@ class CookieStateWorkflowTests(unittest.TestCase):
             self.workflow,
         )
 
+    def test_environment_export_runs_as_a_package_module(self):
+        self.assertIn("run: python -m utils.export_github_env", self.workflow)
+        self.assertNotIn("run: python utils/export_github_env.py", self.workflow)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -64,7 +64,7 @@ jobs:
       env:
         VARS_JSON: ${{ toJson(vars) }}
         SECRETS_JSON: ${{ toJson(secrets) }}
-      run: python utils/export_github_env.py
+      run: python -m utils.export_github_env
     - name: Run DouYin Spark Flow
       env:
         VALIDATE_ONLY: ${{ inputs.validate_only || 'false' }}
