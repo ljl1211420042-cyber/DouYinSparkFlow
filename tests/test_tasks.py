@@ -41,7 +41,12 @@ class FakePage:
 class WaitAndActivateFriendListTests(unittest.TestCase):
     def test_uses_current_conversation_list_selectors(self):
         self.assertIn("item-header-name-", tasks.CONVERSATION_ITEM_SELECTOR)
-        self.assertIn("item-header-name-", tasks.CONVERSATION_SCROLL_SELECTOR)
+        self.assertIn("ReactVirtualized__Grid", tasks.CONVERSATION_SCROLL_SELECTOR)
+        self.assertIn("normalize-space", tasks.CONVERSATION_SCROLL_SELECTOR)
+
+    def test_missing_targets_fail_the_account_task(self):
+        with self.assertRaisesRegex(RuntimeError, "2 个目标"):
+            tasks.raise_for_missing_targets("tester", {"one", "two"})
 
     def test_uses_playwright_first_locator_property(self):
         page = FakePage()

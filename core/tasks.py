@@ -24,11 +24,15 @@ FRIENDS_TAB_SELECTORS = (
     'xpath=//*[@id="sub-app"]/div/div/div[1]/div[2]',
 )
 CONVERSATION_ITEM_SELECTOR = (
-    'xpath=//li[contains(@class, "semi-list-item")]'
+    'xpath=//div[@role="tab-panel" and @aria-hidden="false"]'
+    '//li[contains(@class, "semi-list-item")]'
     '[.//span[contains(@class, "item-header-name-")]]'
 )
 CONVERSATION_SCROLL_SELECTOR = (
-    'xpath=//span[contains(@class, "item-header-name-")]/ancestor::ul[1]'
+    'xpath=//div[@role="tab-panel" and @aria-hidden="false"]'
+    '//span[contains(@class, "item-header-name-")]'
+    '/ancestor::div[contains(concat(" ", normalize-space(@class), " "), '
+    '" ReactVirtualized__Grid ")][1]'
 )
 
 def handle_response(response: Response):
@@ -164,6 +168,19 @@ def wait_and_activate_friend_list(page, username, target_selector):
         raise RuntimeError(
             f"账号 {username} 好友列表未加载，任务未发送任何消息"
         )
+
+
+def raise_for_missing_targets(username, remaining_targets):
+    missing_count = len(remaining_targets)
+    if not missing_count:
+        return
+
+    logger.error(
+        f"账号 {username} 搜索结束，仍有 {missing_count} 个目标未找到"
+    )
+    raise RuntimeError(
+        f"账号 {username} 有 {missing_count} 个目标未找到，任务未完整执行"
+    )
 
 
 def scroll_and_select_user(page, username, targets):
@@ -318,6 +335,8 @@ def scroll_and_select_user(page, username, targets):
             else:
                 logger.error(f"账号 {username} 未找到滚动容器，退出")
                 break
+
+    raise_for_missing_targets(username, remaining_targets)
 
 
 def do_user_task(browser, username, cookies, targets):
