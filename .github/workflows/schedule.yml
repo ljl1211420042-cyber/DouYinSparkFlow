@@ -1,6 +1,12 @@
 name: DouYin Spark Flow Schedule Run
 on:
   workflow_dispatch: # 允许手动触发
+    inputs:
+      validate_only:
+        description: Validate login and refresh cookies without sending
+        required: false
+        default: false
+        type: boolean
   schedule: # 定时任务
     - cron: "0 22 * * *" # 每天 22:00 UTC（对应北京时间次日 06:00）
 jobs:
@@ -23,13 +29,66 @@ jobs:
         pip install -r requirements.txt
     - name: Ensure browsers are installed
       run: playwright install chromium --with-deps --only-shell
+    - name: Restore encrypted cookie state cache
+      uses: actions/cache@v4
+      with:
+        path: .cookie-state/state.enc
+        key: douyin-cookie-state-${{ github.run_id }}
+        restore-keys: |
+          douyin-cookie-state-
+    - name: Decrypt cached cookie state
+      env:
+        COOKIE_STATE_KEY: ${{ secrets.COOKIE_STATE_KEY }}
+      run: |
+        mkdir -p .cookie-state
+        if [ -z "$COOKIE_STATE_KEY" ]; then
+          echo "::warning::COOKIE_STATE_KEY is missing; using bootstrap Cookie Secret"
+          exit 0
+        fi
+        if [ ! -s .cookie-state/state.enc ]; then
+          echo "No cached cookie state; using bootstrap Cookie Secret"
+          exit 0
+        fi
+        if openssl enc -d -aes-256-cbc -pbkdf2 -iter 200000 \
+          -pass env:COOKIE_STATE_KEY \
+          -in .cookie-state/state.enc \
+          -out .cookie-state/latest.json; then
+          chmod 600 .cookie-state/latest.json
+          echo "COOKIE_STATE_FILE=$GITHUB_WORKSPACE/.cookie-state/latest.json" >> "$GITHUB_ENV"
+          echo "Encrypted cookie state restored"
+        else
+          rm -f .cookie-state/latest.json
+          echo "::warning::Cookie state decryption failed; using bootstrap Cookie Secret"
+        fi
     - name: Export Github Environment Variables and Secrets to JSON
       env:
         VARS_JSON: ${{ toJson(vars) }}
         SECRETS_JSON: ${{ toJson(secrets) }}
       run: python utils/export_github_env.py
     - name: Run DouYin Spark Flow
+      env:
+        VALIDATE_ONLY: ${{ inputs.validate_only || 'false' }}
+        COOKIE_STATE_OUTPUT: .cookie-state/refreshed.json
       run: python main.py
+    - name: Encrypt refreshed cookie state
+      if: ${{ success() }}
+      env:
+        COOKIE_STATE_KEY: ${{ secrets.COOKIE_STATE_KEY }}
+      run: |
+        if [ -z "$COOKIE_STATE_KEY" ]; then
+          echo "COOKIE_STATE_KEY is required to persist refreshed cookies" >&2
+          exit 1
+        fi
+        if [ ! -s .cookie-state/refreshed.json ]; then
+          echo "Refreshed cookie state was not produced" >&2
+          exit 1
+        fi
+        openssl enc -aes-256-cbc -pbkdf2 -iter 200000 -salt \
+          -pass env:COOKIE_STATE_KEY \
+          -in .cookie-state/refreshed.json \
+          -out .cookie-state/state.enc.tmp
+        mv .cookie-state/state.enc.tmp .cookie-state/state.enc
+        rm -f .cookie-state/latest.json .cookie-state/refreshed.json
     - uses: actions/upload-artifact@v4
       if: ${{ !cancelled() }}
       with:

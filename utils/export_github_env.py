@@ -5,6 +5,9 @@ import sys
 from utils.cookie_state import load_cookie_state, validate_cookie_state
 
 
+RESERVED_SECRETS = {"COOKIE_STATE_KEY"}
+
+
 def fail(message: str) -> None:
     print(message, file=sys.stderr)
     raise SystemExit(1)
@@ -40,7 +43,11 @@ def build_environment(vars_map, secrets_map, cookie_state) -> dict[str, str]:
         str(key): as_env_string(value) for key, value in vars_map.items()
     }
     environment.update(
-        {str(key): as_env_string(value) for key, value in secrets_map.items()}
+        {
+            str(key): as_env_string(value)
+            for key, value in secrets_map.items()
+            if str(key) not in RESERVED_SECRETS
+        }
     )
     environment.update(
         {

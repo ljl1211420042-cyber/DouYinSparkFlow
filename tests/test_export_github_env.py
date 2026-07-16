@@ -37,6 +37,19 @@ class BuildEnvironmentTests(unittest.TestCase):
 
         self.assertEqual(result["COOKIES_123"], "bootstrap-cookie")
 
+    def test_encryption_key_is_not_exported_to_runtime_environment(self):
+        result = build_environment(
+            {},
+            {
+                "COOKIE_STATE_KEY": "encryption-key",
+                "COOKIES_123": "bootstrap-cookie",
+            },
+            {},
+        )
+
+        self.assertNotIn("COOKIE_STATE_KEY", result)
+        self.assertEqual(result["COOKIES_123"], "bootstrap-cookie")
+
 
 if __name__ == "__main__":
     unittest.main()
