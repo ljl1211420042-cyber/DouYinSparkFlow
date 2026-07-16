@@ -2,6 +2,8 @@ import json
 import os
 import sys
 
+from utils.cookie_state import load_cookie_state, validate_cookie_state
+
 
 def fail(message: str) -> None:
     print(message, file=sys.stderr)
@@ -33,10 +35,27 @@ def format_key_list(keys) -> str:
     return ", ".join(sorted(str(key) for key in keys))
 
 
+def build_environment(vars_map, secrets_map, cookie_state) -> dict[str, str]:
+    environment = {
+        str(key): as_env_string(value) for key, value in vars_map.items()
+    }
+    environment.update(
+        {str(key): as_env_string(value) for key, value in secrets_map.items()}
+    )
+    environment.update(
+        {
+            key: as_env_string(value)
+            for key, value in validate_cookie_state(cookie_state).items()
+        }
+    )
+    return environment
+
+
 def main() -> None:
     vars_raw = os.getenv("VARS_JSON", "{}")
     secrets_raw = os.getenv("SECRETS_JSON", "{}")
     github_env = os.getenv("GITHUB_ENV")
+    cookie_state_file = os.getenv("COOKIE_STATE_FILE", "")
 
     if not github_env:
         fail("GITHUB_ENV is not set")
@@ -56,20 +75,14 @@ def main() -> None:
     if not isinstance(secrets_map, dict):
         fail("SECRETS_JSON must be a JSON object")
 
-    dotenv_map = {}
     vars_keys = list(vars_map.keys())
     secrets_keys = list(secrets_map.keys())
+    cookie_state = load_cookie_state(cookie_state_file)
+    dotenv_map = build_environment(vars_map, secrets_map, cookie_state)
 
     with open(github_env, "a", encoding="utf-8") as env_file:
-        for key, value in vars_map.items():
-            env_value = as_env_string(value)
-            append_github_env_block(env_file, str(key), env_value)
-            dotenv_map[str(key)] = env_value
-
-        for key, value in secrets_map.items():
-            env_value = as_env_string(value)
-            append_github_env_block(env_file, str(key), env_value)
-            dotenv_map[str(key)] = env_value
+        for key, value in dotenv_map.items():
+            append_github_env_block(env_file, key, value)
 
     dotenv_lines = [f"{key}={to_dotenv_value(value)}" for key, value in dotenv_map.items()]
     with open(".env", "w", encoding="utf-8") as dotenv_file:
@@ -83,6 +96,7 @@ def main() -> None:
         "SECRETS_JSON exported "
         f"({len(secrets_keys)}): {format_key_list(secrets_keys)}"
     )
+    print(f"Refreshed cookie states loaded: {len(cookie_state)}")
 
 
 if __name__ == "__main__":
