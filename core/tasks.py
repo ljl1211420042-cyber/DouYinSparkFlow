@@ -35,6 +35,11 @@ CONVERSATION_SCROLL_SELECTOR = (
     '/ancestor::div[contains(concat(" ", normalize-space(@class), " "), '
     '" ReactVirtualized__Grid ")][1]'
 )
+EMPTY_FRIEND_LIST_SELECTOR = (
+    'xpath=//div[@role="tab-panel" and @aria-hidden="false"]'
+    '//*[contains(normalize-space(.), "还没有收到私信")]'
+)
+FRIEND_LIST_RECOVERY_WAIT_MS = 15000
 
 def handle_response(response: Response):
     """
@@ -156,12 +161,41 @@ def wait_and_activate_friend_list(page, username, target_selector):
     """等待好友列表加载，并点击第一个好友项激活列表。"""
     raise_if_authentication_required(page, username)
 
+    initial_wait = min(
+        config["browserTimeout"], FRIEND_LIST_RECOVERY_WAIT_MS
+    )
+    remaining_wait = max(1, config["browserTimeout"] - initial_wait)
+
     try:
         first_friend = page.locator(target_selector).first
-        first_friend.wait_for(state="visible", timeout=config["browserTimeout"])
+        first_friend.wait_for(state="visible", timeout=initial_wait)
         first_friend.click()
         return True
     except PlaywrightTimeoutError:
+        raise_if_authentication_required(page, username)
+
+    empty_state = page.locator(EMPTY_FRIEND_LIST_SELECTOR)
+    if empty_state.count() > 0 and empty_state.first.is_visible():
+        logger.warning(
+            f"账号 {username} 好友列表暂时为空，重新加载消息页面一次"
+        )
+        try:
+            page.reload(
+                wait_until="domcontentloaded",
+                timeout=config["browserTimeout"],
+            )
+            friends_tab = wait_for_friends_tab(page, username)
+            friends_tab.click()
+        except PlaywrightTimeoutError:
+            logger.warning(f"账号 {username} 重新加载消息页面超时")
+
+    try:
+        first_friend = page.locator(target_selector).first
+        first_friend.wait_for(state="visible", timeout=remaining_wait)
+        first_friend.click()
+        return True
+    except PlaywrightTimeoutError:
+        raise_if_authentication_required(page, username)
         logger.error(
             f"账号 {username} 好友列表在 {config['browserTimeout']}ms 内未加载出好友项"
         )

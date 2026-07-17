@@ -26,6 +26,48 @@ class TimeoutLocator(FakeLocator):
         raise PlaywrightTimeoutError("friend list timeout")
 
 
+class VisibleLocator(FakeLocator):
+    def count(self):
+        return 1
+
+    def is_visible(self):
+        return True
+
+
+class RecoveringFriendLocator(FakeLocator):
+    def __init__(self, page):
+        super().__init__()
+        self.page = page
+        self.wait_timeouts = []
+
+    def wait_for(self, state, timeout):
+        self.wait_timeouts.append(timeout)
+        if not self.page.reloaded:
+            raise PlaywrightTimeoutError("friend list temporarily empty")
+        super().wait_for(state, timeout)
+
+
+class RecoveringEmptyFriendListPage:
+    def __init__(self):
+        self.reloaded = False
+        self.reload_calls = 0
+        self.friend = RecoveringFriendLocator(self)
+        self.friend_tab = VisibleLocator()
+
+    def locator(self, selector):
+        if selector in tasks.AUTHENTICATION_PAGE_MARKERS:
+            return MarkerLocator(False)
+        if selector == tasks.EMPTY_FRIEND_LIST_SELECTOR:
+            return MarkerLocator(not self.reloaded)
+        if selector in tasks.FRIENDS_TAB_SELECTORS:
+            return self.friend_tab
+        return self.friend
+
+    def reload(self, wait_until, timeout):
+        self.reload_calls += 1
+        self.reloaded = True
+
+
 class FakePage:
     def __init__(self, friend=None):
         self.friend = friend or FakeLocator()
@@ -33,6 +75,8 @@ class FakePage:
 
     def locator(self, selector):
         if selector in tasks.AUTHENTICATION_PAGE_MARKERS:
+            return MarkerLocator(False)
+        if selector == tasks.EMPTY_FRIEND_LIST_SELECTOR:
             return MarkerLocator(False)
         self.selector = selector
         return self.friend
@@ -129,6 +173,23 @@ class WaitAndActivateFriendListTests(unittest.TestCase):
         diagnostics.assert_called_once_with(
             page, "tester", "friend_list_not_ready"
         )
+
+    def test_empty_friend_list_reloads_once_before_sending(self):
+        page = RecoveringEmptyFriendListPage()
+        original_config = tasks.config
+        tasks.config = {"browserTimeout": 20000}
+        try:
+            result = tasks.wait_and_activate_friend_list(
+                page, "tester", "friend-selector"
+            )
+        finally:
+            tasks.config = original_config
+
+        self.assertTrue(result)
+        self.assertEqual(page.reload_calls, 1)
+        self.assertTrue(page.friend_tab.clicked)
+        self.assertTrue(page.friend.clicked)
+        self.assertEqual(page.friend.wait_timeouts, [15000, 5000])
 
 
 class MarkerLocator:
