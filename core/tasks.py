@@ -226,6 +226,12 @@ def raise_for_missing_targets(username, remaining_targets):
     )
 
 
+def has_reached_friend_list_end(page, selector):
+    """Only treat the end marker as active when it is actually visible."""
+    marker = page.locator(selector)
+    return marker.count() > 0 and marker.first.is_visible()
+
+
 def scroll_and_select_user(page, username, targets):
     """尝试滚动并查找用户名"""
     target_selector = CONVERSATION_ITEM_SELECTOR
@@ -318,7 +324,7 @@ def scroll_and_select_user(page, username, targets):
             # [修复] 状态检测逻辑（多重兜底）
             
             # 1. 检查是否到底（"没有更多了" —— 使用模糊类名匹配）
-            if page.locator(no_more_selector).count() > 0:
+            if has_reached_friend_list_end(page, no_more_selector):
                 logger.info(f"账号 {username} 检测到'没有更多了'标志，已到达底部")
                 if len(remaining_targets) > 0:
                     logger.warning(f"账号 {username} 搜索结束，仍有以下好友未找到: {remaining_targets}")

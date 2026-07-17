@@ -215,6 +215,32 @@ class MarkerPage:
         return MarkerLocator(selector in self.visible_selectors)
 
 
+class PresentButHiddenLocator(MarkerLocator):
+    def count(self):
+        return 1
+
+
+class PresentButHiddenPage:
+    def locator(self, selector):
+        return PresentButHiddenLocator(False)
+
+
+class FriendListEndMarkerTests(unittest.TestCase):
+    def test_hidden_no_more_marker_does_not_end_search(self):
+        page = PresentButHiddenPage()
+
+        self.assertFalse(
+            tasks.has_reached_friend_list_end(page, "no-more-selector")
+        )
+
+    def test_visible_no_more_marker_ends_search(self):
+        page = MarkerPage({"no-more-selector"})
+
+        self.assertTrue(
+            tasks.has_reached_friend_list_end(page, "no-more-selector")
+        )
+
+
 class DelayedAuthenticationPage(MarkerPage):
     def __init__(self):
         super().__init__(set())
