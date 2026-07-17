@@ -213,10 +213,17 @@ def validate_account_session(page, username):
     logger.info(f"账号 {username} 登录和好友列表验证通过，未发送消息")
 
 
-def raise_for_missing_targets(username, remaining_targets):
+def handle_missing_targets(username, remaining_targets, selected_count):
     missing_count = len(remaining_targets)
     if not missing_count:
-        return
+        return 0
+
+    if selected_count:
+        logger.warning(
+            f"账号 {username} 已完成 {selected_count} 个目标，"
+            f"其余 {missing_count} 个目标本次跳过"
+        )
+        return missing_count
 
     logger.error(
         f"账号 {username} 搜索结束，仍有 {missing_count} 个目标未找到"
@@ -385,7 +392,11 @@ def scroll_and_select_user(page, username, targets):
                 logger.error(f"账号 {username} 未找到滚动容器，退出")
                 break
 
-    raise_for_missing_targets(username, remaining_targets)
+    handle_missing_targets(
+        username,
+        remaining_targets,
+        selected_count=len(targets) - len(remaining_targets),
+    )
 
 
 def do_user_task(browser, username, cookies, targets):

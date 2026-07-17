@@ -139,9 +139,18 @@ class WaitAndActivateFriendListTests(unittest.TestCase):
         self.assertIn("ReactVirtualized__Grid", tasks.CONVERSATION_SCROLL_SELECTOR)
         self.assertIn("normalize-space", tasks.CONVERSATION_SCROLL_SELECTOR)
 
-    def test_missing_targets_fail_the_account_task(self):
+    def test_all_missing_targets_fail_the_account_task(self):
         with self.assertRaisesRegex(RuntimeError, "2 个目标"):
-            tasks.raise_for_missing_targets("tester", {"one", "two"})
+            tasks.handle_missing_targets(
+                "tester", {"one", "two"}, selected_count=0
+            )
+
+    def test_partial_missing_targets_only_warn(self):
+        result = tasks.handle_missing_targets(
+            "tester", {"one", "two"}, selected_count=1
+        )
+
+        self.assertEqual(result, 2)
 
     def test_uses_playwright_first_locator_property(self):
         page = FakePage()
