@@ -450,9 +450,9 @@ def do_user_task(browser, username, cookies, targets):
                     logger.debug(
                         f"账号 {username} 准备发送消息给好友 {username}：\n\t{message}"
                     )
-                    logger.debug(f"账号 {username} 给好友 {username} 发送消息完成")
                     chat_input.press("Enter")
-                    time.sleep(2)
+                    logger.debug(f"账号 {username} 给好友 {username} 发送消息完成")
+                    time.sleep(config["messageSendIntervalSeconds"])
 
             return context.cookies()
         finally:
