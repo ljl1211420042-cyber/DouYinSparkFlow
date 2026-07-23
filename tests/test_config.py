@@ -55,6 +55,31 @@ class ValidateOnlyConfigTests(unittest.TestCase):
         finally:
             config_module.config = original
 
+    def test_reads_runtime_state_paths(self):
+        original = config_module.config
+        config_module.config = None
+        try:
+            with patch.dict(
+                config_module.os.environ,
+                {
+                    "RUNTIME_STATE_FILE": "/tmp/input.json",
+                    "RUNTIME_STATE_OUTPUT": "/tmp/output.json",
+                    "RUNTIME_STATE_UNCERTAIN_MARKER": "/tmp/uncertain",
+                    "LEDGER_TIMEZONE": "Asia/Shanghai",
+                },
+                clear=False,
+            ):
+                config = config_module.get_config()
+                self.assertEqual(config["runtimeStateFile"], "/tmp/input.json")
+                self.assertEqual(config["runtimeStateOutput"], "/tmp/output.json")
+                self.assertEqual(
+                    config["runtimeStateUncertainMarker"],
+                    "/tmp/uncertain",
+                )
+                self.assertEqual(config["ledgerTimezone"], "Asia/Shanghai")
+        finally:
+            config_module.config = original
+
 
 if __name__ == "__main__":
     unittest.main()

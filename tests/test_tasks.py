@@ -1,8 +1,12 @@
+import tempfile
 import unittest
+from datetime import datetime
+from pathlib import Path
 from unittest.mock import patch
 from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 
 from core import tasks
+from utils.runtime_state import mark_sent, new_runtime_state, was_sent
 
 
 class FakeLocator:
@@ -299,6 +303,127 @@ class ConversationSelectionTests(unittest.TestCase):
         )
 
 
+class ExactMessageLocator:
+    def __init__(self, counts):
+        self.counts = iter(counts)
+
+    def count(self):
+        return next(self.counts)
+
+
+class FakeChatInput:
+    def __init__(self):
+        self.typed = []
+        self.enter_presses = 0
+
+    def type(self, text):
+        self.typed.append(text)
+
+    def press(self, key):
+        if key == "Enter":
+            self.enter_presses += 1
+
+
+class SendPage:
+    def __init__(self, header_name, message_counts):
+        self.header = ConversationHeaderLocator(header_name)
+        self.messages = ExactMessageLocator(message_counts)
+        self.input = FakeChatInput()
+
+    def locator(self, selector):
+        if selector == tasks.ACTIVE_CONVERSATION_HEADER_SELECTOR:
+            return self.header
+        if selector == tasks.CHAT_INPUT_SELECTOR:
+            return self.input
+        return MarkerLocator(False)
+
+    def get_by_text(self, text, exact):
+        return self.messages
+
+
+class SendOnceTests(unittest.TestCase):
+    def test_exactly_one_new_message_is_required(self):
+        page = SendPage("Bruno", [2, 3])
+        tasks.send_message_once(page, "Bruno", "古德猫宁")
+        self.assertEqual(page.input.enter_presses, 1)
+
+    def test_missing_new_message_is_ambiguous_and_not_recorded(self):
+        page = SendPage("Bruno", [2, 2])
+        with self.assertRaisesRegex(RuntimeError, "无法确认"):
+            tasks.send_message_once(page, "Bruno", "古德猫宁")
+
+    def test_pending_targets_excludes_today_sent_ids(self):
+        state = new_runtime_state()
+        now = datetime.fromisoformat("2026-07-23T06:00:00+08:00")
+        mark_sent(state, "11x_y", now)
+        self.assertEqual(
+            tasks.pending_targets(
+                state,
+                ["11x_y", "61723137"],
+                now.date(),
+            ),
+            ["61723137"],
+        )
+
+    def test_duplicate_nickname_mapping_is_rejected(self):
+        mapping = {
+            "one": {"nickname": "相同昵称"},
+            "two": {"nickname": "相同昵称"},
+        }
+        with self.assertRaisesRegex(RuntimeError, "唯一"):
+            tasks.resolve_target_symbol(
+                "相同昵称",
+                ["one", "two"],
+                mapping,
+                "short_id",
+            )
+
+    def test_authentication_failure_does_not_capture_page_html(self):
+        self.assertFalse(
+            tasks.should_capture_diagnostic_html(
+                "authentication_required"
+            )
+        )
+        self.assertTrue(
+            tasks.should_capture_diagnostic_html(
+                "friend_list_not_ready"
+            )
+        )
+
+    @patch.object(tasks, "write_runtime_state")
+    def test_verified_send_is_persisted_immediately(self, write_state):
+        state = new_runtime_state()
+        sent_at = datetime.fromisoformat("2026-07-23T06:00:00+08:00")
+        cookies = [
+            {
+                "name": "sessionid",
+                "value": "rotated",
+                "domain": ".douyin.com",
+                "path": "/",
+            }
+        ]
+        tasks.persist_verified_send(
+            state,
+            "90530392137",
+            "11x_y",
+            cookies,
+            sent_at,
+            "/tmp/runtime-output.json",
+        )
+        self.assertTrue(was_sent(state, "11x_y", sent_at.date()))
+        self.assertFalse(was_sent(state, "61723137", sent_at.date()))
+        write_state.assert_called_once_with(
+            "/tmp/runtime-output.json",
+            state,
+        )
+
+    def test_unverified_send_creates_uncertainty_marker(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            marker = Path(temp_dir) / "uncertain"
+            tasks.mark_uncertain_send(marker)
+            self.assertTrue(marker.exists())
+
+
 class DelayedAuthenticationPage(MarkerPage):
     def __init__(self):
         super().__init__(set())
@@ -406,7 +531,7 @@ class RefreshedCookieStateTests(unittest.TestCase):
         sender.assert_not_called()
         self.assertTrue(context.closed)
 
-    def test_complete_run_writes_refreshed_cookie_state(self):
+    def test_complete_run_writes_initial_runtime_state(self):
         refreshed = [
             {
                 "name": "sessionid",
@@ -425,24 +550,25 @@ class RefreshedCookieStateTests(unittest.TestCase):
                 "targets": [],
             }
         ]
+        tasks.config = {
+            **self.original_config,
+            "runtimeStateFile": "",
+            "runtimeStateOutput": "/tmp/runtime-output.json",
+        }
 
-        with patch.dict(
-            tasks.os.environ,
-            {"COOKIE_STATE_OUTPUT": "/tmp/refreshed-state.json"},
-            clear=False,
-        ):
-            with patch.object(tasks, "get_browser", return_value=(playwright, browser)):
-                with patch.object(tasks, "do_user_task", return_value=refreshed):
-                    with patch.object(tasks, "write_cookie_state") as write_state:
-                        tasks.runTasks()
+        with patch.object(tasks, "get_browser", return_value=(playwright, browser)):
+            with patch.object(tasks, "do_user_task", return_value=refreshed):
+                with patch.object(tasks, "write_runtime_state") as write_state:
+                    tasks.runTasks()
 
         write_state.assert_called_once_with(
-            "/tmp/refreshed-state.json", {"COOKIES_123": refreshed}
+            "/tmp/runtime-output.json",
+            new_runtime_state(),
         )
         self.assertTrue(browser.closed)
         self.assertTrue(playwright.stopped)
 
-    def test_failed_run_does_not_write_cookie_state(self):
+    def test_failed_run_preserves_initial_runtime_state(self):
         browser = FakeBrowser()
         playwright = FakePlaywright()
         tasks.userData = [
@@ -453,21 +579,24 @@ class RefreshedCookieStateTests(unittest.TestCase):
                 "targets": [],
             }
         ]
+        tasks.config = {
+            **self.original_config,
+            "runtimeStateFile": "",
+            "runtimeStateOutput": "/tmp/runtime-output.json",
+        }
 
-        with patch.dict(
-            tasks.os.environ,
-            {"COOKIE_STATE_OUTPUT": "/tmp/refreshed-state.json"},
-            clear=False,
-        ):
-            with patch.object(tasks, "get_browser", return_value=(playwright, browser)):
-                with patch.object(
-                    tasks, "do_user_task", side_effect=RuntimeError("failed")
-                ):
-                    with patch.object(tasks, "write_cookie_state") as write_state:
-                        with self.assertRaisesRegex(RuntimeError, "failed"):
-                            tasks.runTasks()
+        with patch.object(tasks, "get_browser", return_value=(playwright, browser)):
+            with patch.object(
+                tasks, "do_user_task", side_effect=RuntimeError("failed")
+            ):
+                with patch.object(tasks, "write_runtime_state") as write_state:
+                    with self.assertRaisesRegex(RuntimeError, "failed"):
+                        tasks.runTasks()
 
-        write_state.assert_not_called()
+        write_state.assert_called_once_with(
+            "/tmp/runtime-output.json",
+            new_runtime_state(),
+        )
         self.assertTrue(browser.closed)
         self.assertTrue(playwright.stopped)
 

@@ -1,12 +1,22 @@
 
 import traceback
 import os
+from datetime import datetime
+from pathlib import Path
+from zoneinfo import ZoneInfo
 from utils.logger import setup_logger
 from utils.config import get_config, get_userData
 from core.msg_builder import build_message, build_message_with_openai
 from core.browser import get_browser
 from playwright.sync_api import Response, TimeoutError as PlaywrightTimeoutError
-from utils.cookie_state import cookie_key, write_cookie_state
+from utils.runtime_state import (
+    load_runtime_state,
+    mark_sent,
+    new_runtime_state,
+    set_account_cookies,
+    was_sent,
+    write_runtime_state,
+)
 import time
 import json
 
@@ -42,8 +52,13 @@ EMPTY_FRIEND_LIST_SELECTOR = (
 ACTIVE_CONVERSATION_HEADER_SELECTOR = (
     'strong[class*="box-header-name-"]'
 )
+CHAT_INPUT_SELECTOR = "xpath=//div[contains(@class, 'chat-input-')]"
 FRIEND_LIST_RECOVERY_WAIT_MS = 15000
 CONVERSATION_SWITCH_TIMEOUT_MS = 5000
+
+
+class UncertainSendError(RuntimeError):
+    pass
 
 def handle_response(response: Response):
     """
@@ -105,11 +120,12 @@ def save_page_diagnostics(page, username, reason):
     except Exception as e:
         logger.warning(f"保存页面截图失败: {e}")
 
-    try:
-        with open(f"{base_path}.html", "w", encoding="utf-8") as html_file:
-            html_file.write(page.content())
-    except Exception as e:
-        logger.warning(f"保存页面 HTML 失败: {e}")
+    if should_capture_diagnostic_html(reason):
+        try:
+            with open(f"{base_path}.html", "w", encoding="utf-8") as html_file:
+                html_file.write(page.content())
+        except Exception as e:
+            logger.warning(f"保存页面 HTML 失败: {e}")
 
     try:
         logger.error(f"页面诊断信息: title={page.title()}, url={page.url}")
@@ -259,6 +275,75 @@ def ensure_active_conversation(page, expected_name):
     return active_name
 
 
+def should_capture_diagnostic_html(reason):
+    return reason != "authentication_required"
+
+
+def pending_targets(state, targets, day):
+    return [
+        target
+        for target in targets
+        if not was_sent(state, target, day)
+    ]
+
+
+def resolve_target_symbol(target_name, targets, user_id_dict, mode):
+    if mode != "short_id":
+        return target_name
+    matches = [
+        short_id
+        for short_id, info in user_id_dict.items()
+        if info.get("nickname") == target_name
+        and short_id in targets
+    ]
+    if len(matches) != 1:
+        raise RuntimeError(
+            f"好友 {target_name!r} 无法唯一映射到目标抖音号"
+        )
+    return matches[0]
+
+
+def send_message_once(page, expected_name, message):
+    ensure_active_conversation(page, expected_name)
+    exact_messages = page.get_by_text(message, exact=True)
+    before_count = exact_messages.count()
+    chat_input = page.locator(CHAT_INPUT_SELECTOR)
+    lines = message.split("\\n")
+    for index, line in enumerate(lines):
+        chat_input.type(line)
+        if index < len(lines) - 1:
+            chat_input.press("Shift+Enter")
+    ensure_active_conversation(page, expected_name)
+    chat_input.press("Enter")
+    after_count = exact_messages.count()
+    if after_count != before_count + 1:
+        raise UncertainSendError(
+            f"无法确认给 {expected_name} 的消息只新增了一条"
+        )
+
+
+def persist_verified_send(
+    state,
+    unique_id,
+    target,
+    cookies,
+    sent_at,
+    output_path,
+):
+    mark_sent(state, target, sent_at)
+    set_account_cookies(state, unique_id, cookies)
+    if output_path:
+        write_runtime_state(output_path, state)
+
+
+def mark_uncertain_send(path):
+    if not path:
+        return
+    marker = Path(path)
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    marker.touch(mode=0o600, exist_ok=True)
+
+
 def scroll_and_select_user(page, username, targets):
     """尝试滚动并查找用户名"""
     target_selector = CONVERSATION_ITEM_SELECTOR
@@ -314,10 +399,12 @@ def scroll_and_select_user(page, username, targets):
 
                 logger.debug(f"账号 {username} 找到好友 {targetName}")
                 # 检查是否是目标用户名
-                if matchMode == "short_id":
-                    targetSymbol = next((sid for sid, info in userIDDict.items() if info.get("nickname") == targetName), None)
-                else:
-                    targetSymbol = targetName
+                targetSymbol = resolve_target_symbol(
+                    targetName,
+                    targets,
+                    userIDDict,
+                    matchMode,
+                )
 
                 if targetSymbol in targets:
                     element.click()
@@ -330,7 +417,7 @@ def scroll_and_select_user(page, username, targets):
                         logger.debug(
                             f"账号 {username} 选中目标好友 {targetName} (ShortId: {targetSymbol}) 准备开始交互"
                         )
-                    yield targetName
+                    yield targetSymbol, targetName
                     
                     # [修改] 标记已找到，如果全找到了直接退出
                     if targetSymbol in remaining_targets:
@@ -420,7 +507,18 @@ def scroll_and_select_user(page, username, targets):
     )
 
 
-def do_user_task(browser, username, cookies, targets):
+def do_user_task(
+    browser,
+    username,
+    cookies,
+    targets,
+    unique_id=None,
+    runtime_state=None,
+    runtime_state_output="",
+):
+        if runtime_state is None:
+            runtime_state = new_runtime_state()
+        unique_id = unique_id or username
         context = browser.new_context()  # 每个任务使用独立的上下文
         try:
             context.set_default_navigation_timeout(config["browserTimeout"])
@@ -450,29 +548,62 @@ def do_user_task(browser, username, cookies, targets):
 
             if config.get("validateOnly", False):
                 validate_account_session(page, username)
+                set_account_cookies(
+                    runtime_state,
+                    unique_id,
+                    context.cookies(),
+                )
+                if runtime_state_output:
+                    write_runtime_state(
+                        runtime_state_output,
+                        runtime_state,
+                    )
             else:
+                now = datetime.now(ZoneInfo(config["ledgerTimezone"]))
+                targets = pending_targets(
+                    runtime_state,
+                    targets,
+                    now.date(),
+                )
                 logger.debug(f"账号 {username} 开始发送消息")
-                for username in scroll_and_select_user(page, username, targets):
-                    logger.debug(f"账号 {username} 已选中好友 {username} 发送消息")
-                    chat_input_selector = (
-                        "xpath=//div[contains(@class, 'chat-input-')]"
+                for target_symbol, target_name in scroll_and_select_user(
+                    page,
+                    username,
+                    targets,
+                ):
+                    logger.debug(
+                        f"账号 {username} 已选中好友 {target_name} 发送消息"
                     )
                     page.wait_for_selector(
-                        chat_input_selector, timeout=config["browserTimeout"]
+                        CHAT_INPUT_SELECTOR,
+                        timeout=config["browserTimeout"],
                     )
-                    chat_input = page.locator(chat_input_selector)
 
                     message = build_message()
-                    for line in message.split("\\n"):
-                        chat_input.type(line)
-                        if line != message.split("\\n")[-1]:
-                            chat_input.press("Shift+Enter")
-
                     logger.debug(
-                        f"账号 {username} 准备发送消息给好友 {username}：\n\t{message}"
+                        f"账号 {username} 准备发送消息给好友 {target_name}：\n\t{message}"
                     )
-                    chat_input.press("Enter")
-                    logger.debug(f"账号 {username} 给好友 {username} 发送消息完成")
+                    try:
+                        send_message_once(page, target_name, message)
+                    except UncertainSendError:
+                        mark_uncertain_send(
+                            config["runtimeStateUncertainMarker"]
+                        )
+                        raise
+
+                    persist_verified_send(
+                        runtime_state,
+                        unique_id,
+                        target_symbol,
+                        context.cookies(),
+                        datetime.now(
+                            ZoneInfo(config["ledgerTimezone"])
+                        ),
+                        runtime_state_output,
+                    )
+                    logger.debug(
+                        f"账号 {username} 给好友 {target_name} 发送消息完成"
+                    )
                     time.sleep(config["messageSendIntervalSeconds"])
 
             return context.cookies()
@@ -482,7 +613,12 @@ def do_user_task(browser, username, cookies, targets):
 
 def runTasks():
     playwright, browser = get_browser()
-    refreshed_cookie_state = {}
+    runtime_state = (
+        load_runtime_state(config["runtimeStateFile"])
+        if config["runtimeStateFile"]
+        else new_runtime_state()
+    )
+    runtime_state_output = config["runtimeStateOutput"]
     try:
         # 检查是否启用多任务和任务数量
         # 创建信号量以限制并发任务数量
@@ -493,6 +629,9 @@ def runTasks():
         for user in userData:
             logger.debug(f"用户: {user.get('username', '未知用户')}, 目标好友: {user['targets']}")
 
+        if runtime_state_output:
+            write_runtime_state(runtime_state_output, runtime_state)
+
         for user in userData:
             cookies = user["cookies"]
             targets = user["targets"]
@@ -501,17 +640,15 @@ def runTasks():
             logger.info(f"开始处理账号 {username}")
             # 创建任务
             refreshed_cookies = do_user_task(
-                browser, username, cookies, targets
-            )
-            refreshed_cookie_state[cookie_key(user["unique_id"])] = (
-                refreshed_cookies
+                browser,
+                username,
+                cookies,
+                targets,
+                user["unique_id"],
+                runtime_state,
+                runtime_state_output,
             )
             logger.info(f"账号 {username} 任务完成")
-
-        cookie_state_output = os.getenv("COOKIE_STATE_OUTPUT", "")
-        if cookie_state_output and refreshed_cookie_state:
-            write_cookie_state(cookie_state_output, refreshed_cookie_state)
-            logger.info("已写出刷新后的 Cookie 状态")
     finally:
         # 关闭浏览器实例
         browser.close()

@@ -59,6 +59,13 @@ def get_config():
         "logLevel": os.getenv("LOG_LEVEL", "DEBUG"),  # 日志级别
         "validateOnly": os.getenv("VALIDATE_ONLY", "false").strip().lower()
         in {"1", "true", "yes", "on"},
+        "runtimeStateFile": os.getenv("RUNTIME_STATE_FILE", ""),
+        "runtimeStateOutput": os.getenv("RUNTIME_STATE_OUTPUT", ""),
+        "runtimeStateUncertainMarker": os.getenv(
+            "RUNTIME_STATE_UNCERTAIN_MARKER",
+            "",
+        ),
+        "ledgerTimezone": os.getenv("LEDGER_TIMEZONE", "Asia/Shanghai"),
     }
 
     return config
