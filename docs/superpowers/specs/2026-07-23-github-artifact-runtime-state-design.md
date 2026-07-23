@@ -20,7 +20,8 @@ second minimum interval, exact conversation-title guard, and diagnostic logs.
 - The repository must never contain plaintext cookies or encryption keys.
 - A hard runner termination after a message is accepted but before any state
   is uploaded creates an unavoidable uncertainty window. The next run must
-  treat an ambiguous chat history as "skip and report", not send again.
+  detect that the newer run has no successor state artifact and stop before
+  sending. Recovery then requires a manual audit or a fresh bootstrap.
 
 ## Considered Approaches
 
@@ -121,16 +122,14 @@ For every target:
 3. resolve the exact Douyin account and verify mutual-follow status;
 4. switch the conversation and require the right-side conversation title to
    equal the resolved nickname exactly;
-5. inspect the recent outgoing chat history for a message with the configured
-   text from the current local date;
-6. if history proves it was already sent, record it and skip;
-7. if history is ambiguous, skip and report instead of sending;
-8. recheck the conversation title, send one message, and verify one new
+5. recheck the conversation title, send one message, and verify one new
    outgoing message appeared; and
-9. atomically record the target as sent immediately after verification.
+6. atomically record the target as sent immediately after verification.
 
 No send operation is automatically retried. A failed target is reported and
-left unrecorded unless chat history proves the message was accepted.
+left unrecorded. If verification cannot prove whether the message was
+accepted, the run fails and does not upload a successor state for that
+uncertain operation.
 
 ### State Upload
 
@@ -141,8 +140,9 @@ atomic state and uploads it as
 `douyin-runtime-state-${{ github.run_id }}` with 90-day retention.
 
 If the runner is cancelled or destroyed before the upload step, the next run
-uses chat-history verification as the second idempotency guard. It never
-guesses in favor of sending.
+compares completed workflow runs with state-artifact run IDs. A newer run
+without a state artifact is an uncertainty gap, so the next run fails before
+sending. It never guesses in favor of sending.
 
 ### Validation and Activation
 
@@ -171,7 +171,7 @@ matching bootstrap Cookie Secrets.
 ### `core/tasks.py`
 
 Checks the ledger before selection, verifies exact account and conversation
-identity, performs chat-history idempotency checks, sends without automatic
+identity, verifies exactly one new outgoing message, sends without automatic
 retry, and persists state after each verified result.
 
 ### `scripts/bootstrap_github_login.py`
@@ -190,9 +190,11 @@ encryption, artifact upload, and the two-step manual validation path.
 - Artifact restore, decrypt, or validation failure: fail before sending.
 - Expired Douyin session: fail before sending and request a new local
   bootstrap.
+- Completed workflow newer than the latest state artifact: fail before
+  sending and request a manual audit or fresh bootstrap.
 - Target cannot be uniquely resolved: skip and report.
 - Conversation title mismatch: skip and report.
-- Ambiguous same-day chat history: skip and report.
+- Message acceptance cannot be verified: fail without retrying the send.
 - Partial task failure: encrypt and upload the latest valid atomic state.
 - Encryption or upload failure: fail the workflow and retain the prior
   artifact as the newest usable state.
@@ -219,7 +221,8 @@ Unit tests cover:
 - target hashing and daily ledger checks;
 - state-over-secret cookie precedence;
 - exact conversation-title mismatch blocking a send;
-- existing-message, ambiguous-history, and new-send outcomes;
+- exactly-one-new-message verification;
+- artifact/run continuity-gap detection;
 - state persistence after each verified send;
 - partial failure preserving the latest state; and
 - local bootstrap subprocess calls receiving secrets through standard input.
