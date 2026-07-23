@@ -7,8 +7,22 @@ on:
         required: false
         default: false
         type: boolean
+      bootstrap_state:
+        description: Ignore old state and bootstrap a new encrypted artifact
+        required: false
+        default: false
+        type: boolean
   schedule: # 定时任务
     - cron: "0 22 * * *" # 每天 22:00 UTC（对应北京时间次日 06:00）
+
+permissions:
+  actions: read
+  contents: read
+
+concurrency:
+  group: douyin-spark-flow
+  cancel-in-progress: false
+
 jobs:
   run-main:
     timeout-minutes: 20
@@ -29,36 +43,42 @@ jobs:
         pip install -r requirements.txt
     - name: Ensure browsers are installed
       run: playwright install chromium --with-deps --only-shell
-    - name: Restore encrypted cookie state cache
-      uses: actions/cache@v4
-      with:
-        path: .cookie-state/state.enc
-        key: douyin-cookie-state-${{ github.run_id }}
-        restore-keys: |
-          douyin-cookie-state-
-    - name: Decrypt cached cookie state
+    - name: Restore encrypted runtime state artifact
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        args=(
+          restore
+          --repository "$GITHUB_REPOSITORY"
+          --workflow schedule.yml
+          --run-id "$GITHUB_RUN_ID"
+          --output .runtime-state/state.enc
+        )
+        if [ "${{ inputs.bootstrap_state || 'false' }}" = "true" ]; then
+          args+=(--allow-bootstrap)
+        fi
+        python -m utils.artifact_state "${args[@]}"
+    - name: Decrypt runtime state
       env:
         COOKIE_STATE_KEY: ${{ secrets.COOKIE_STATE_KEY }}
       run: |
-        mkdir -p .cookie-state
+        mkdir -p .runtime-state
         if [ -z "$COOKIE_STATE_KEY" ]; then
-          echo "::warning::COOKIE_STATE_KEY is missing; using bootstrap Cookie Secret"
-          exit 0
+          echo "COOKIE_STATE_KEY is required" >&2
+          exit 1
         fi
-        if [ ! -s .cookie-state/state.enc ]; then
-          echo "No cached cookie state; using bootstrap Cookie Secret"
-          exit 0
-        fi
-        if openssl enc -d -aes-256-cbc -pbkdf2 -iter 200000 \
+        if [ -s .runtime-state/state.enc ]; then
+          openssl enc -d -aes-256-cbc -pbkdf2 -iter 200000 \
           -pass env:COOKIE_STATE_KEY \
-          -in .cookie-state/state.enc \
-          -out .cookie-state/latest.json; then
-          chmod 600 .cookie-state/latest.json
-          echo "COOKIE_STATE_FILE=$GITHUB_WORKSPACE/.cookie-state/latest.json" >> "$GITHUB_ENV"
-          echo "Encrypted cookie state restored"
-        else
-          rm -f .cookie-state/latest.json
-          echo "::warning::Cookie state decryption failed; using bootstrap Cookie Secret"
+          -in .runtime-state/state.enc \
+          -out .runtime-state/input.json
+          chmod 600 .runtime-state/input.json
+          python -m utils.runtime_state validate .runtime-state/input.json
+          echo "RUNTIME_STATE_FILE=$GITHUB_WORKSPACE/.runtime-state/input.json" \
+            >> "$GITHUB_ENV"
+        elif [ "${{ inputs.bootstrap_state || 'false' }}" != "true" ]; then
+          echo "Runtime state is missing outside bootstrap" >&2
+          exit 1
         fi
     - name: Export Github Environment Variables and Secrets to JSON
       env:
@@ -68,28 +88,52 @@ jobs:
     - name: Run DouYin Spark Flow
       env:
         VALIDATE_ONLY: ${{ inputs.validate_only || 'false' }}
-        COOKIE_STATE_OUTPUT: .cookie-state/refreshed.json
+        RUNTIME_STATE_OUTPUT: .runtime-state/output.json
+        RUNTIME_STATE_UNCERTAIN_MARKER: .runtime-state/uncertain
+        LEDGER_TIMEZONE: Asia/Shanghai
       run: python main.py
-    - name: Encrypt refreshed cookie state
-      if: ${{ success() }}
+    - name: Encrypt latest runtime state
+      id: encrypt_state
+      if: ${{ always() }}
       env:
         COOKIE_STATE_KEY: ${{ secrets.COOKIE_STATE_KEY }}
       run: |
+        if [ ! -s .runtime-state/output.json ]; then
+          echo "state_ready=false" >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+        if [ -e .runtime-state/uncertain ]; then
+          echo "Uncertain send state; refusing to publish successor artifact" >&2
+          echo "state_ready=false" >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
         if [ -z "$COOKIE_STATE_KEY" ]; then
-          echo "COOKIE_STATE_KEY is required to persist refreshed cookies" >&2
+          echo "COOKIE_STATE_KEY is required" >&2
           exit 1
         fi
-        if [ ! -s .cookie-state/refreshed.json ]; then
-          echo "Refreshed cookie state was not produced" >&2
-          exit 1
-        fi
+        python -m utils.runtime_state validate .runtime-state/output.json
         openssl enc -aes-256-cbc -pbkdf2 -iter 200000 -salt \
           -pass env:COOKIE_STATE_KEY \
-          -in .cookie-state/refreshed.json \
-          -out .cookie-state/state.enc.tmp
-        mv .cookie-state/state.enc.tmp .cookie-state/state.enc
-        rm -f .cookie-state/latest.json .cookie-state/refreshed.json
-    - uses: actions/upload-artifact@v4
+          -in .runtime-state/output.json \
+          -out .runtime-state/state.enc
+        echo "state_ready=true" >> "$GITHUB_OUTPUT"
+    - name: Upload encrypted runtime state
+      if: ${{ always() && steps.encrypt_state.outputs.state_ready == 'true' }}
+      uses: actions/upload-artifact@v4
+      with:
+        name: douyin-runtime-state-${{ github.run_id }}
+        path: .runtime-state/state.enc
+        retention-days: 90
+        if-no-files-found: error
+    - name: Remove plaintext runtime state
+      if: ${{ always() }}
+      run: |
+        rm -f .runtime-state/input.json \
+          .runtime-state/output.json \
+          .runtime-state/uncertain
+        rm -f .env
+    - name: Upload diagnostic logs
+      uses: actions/upload-artifact@v4
       if: ${{ !cancelled() }}
       with:
         name: run-logs

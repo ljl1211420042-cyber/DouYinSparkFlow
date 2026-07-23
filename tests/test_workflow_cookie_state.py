@@ -16,34 +16,37 @@ class CookieStateWorkflowTests(unittest.TestCase):
         self.assertIn("VALIDATE_ONLY:", self.workflow)
         self.assertIn("inputs.validate_only", self.workflow)
 
-    def test_restores_encrypted_cookie_state_cache(self):
-        self.assertIn("uses: actions/cache@v4", self.workflow)
-        self.assertIn("path: .cookie-state/state.enc", self.workflow)
-        self.assertIn(
-            "key: douyin-cookie-state-${{ github.run_id }}", self.workflow
-        )
-        self.assertIn("restore-keys: |", self.workflow)
-        self.assertIn("douyin-cookie-state-", self.workflow)
+    def test_serializes_runs_without_cancelling_active_send(self):
+        self.assertIn("concurrency:", self.workflow)
+        self.assertIn("group: douyin-spark-flow", self.workflow)
+        self.assertIn("cancel-in-progress: false", self.workflow)
 
-    def test_decrypts_cached_state_with_fallback(self):
-        self.assertIn("COOKIE_STATE_KEY: ${{ secrets.COOKIE_STATE_KEY }}", self.workflow)
-        self.assertIn(
-            "openssl enc -d -aes-256-cbc -pbkdf2", self.workflow
-        )
-        self.assertIn("COOKIE_STATE_FILE=", self.workflow)
-        self.assertIn("using bootstrap Cookie Secret", self.workflow)
+    def test_restores_runtime_state_from_artifact(self):
+        self.assertNotIn("actions/cache@", self.workflow)
+        self.assertIn("python -m utils.artifact_state", self.workflow)
+        self.assertIn("restore", self.workflow)
+        self.assertIn("RUNTIME_STATE_FILE=", self.workflow)
+        self.assertIn("bootstrap_state:", self.workflow)
 
-    def test_encrypts_only_refreshed_state_and_removes_plaintext(self):
+    def test_uploads_only_encrypted_state_for_ninety_days(self):
+        self.assertIn("uses: actions/upload-artifact@v4", self.workflow)
         self.assertIn(
-            "COOKIE_STATE_OUTPUT: .cookie-state/refreshed.json", self.workflow
-        )
-        self.assertIn("if: ${{ success() }}", self.workflow)
-        self.assertIn("openssl enc -aes-256-cbc -pbkdf2", self.workflow)
-        self.assertIn("-salt", self.workflow)
-        self.assertIn(
-            "rm -f .cookie-state/latest.json .cookie-state/refreshed.json",
+            "name: douyin-runtime-state-${{ github.run_id }}",
             self.workflow,
         )
+        self.assertIn("path: .runtime-state/state.enc", self.workflow)
+        self.assertIn("retention-days: 90", self.workflow)
+        self.assertIn("if: ${{ always()", self.workflow)
+        self.assertIn("RUNTIME_STATE_UNCERTAIN_MARKER:", self.workflow)
+        self.assertIn(
+            "refusing to publish successor artifact",
+            self.workflow,
+        )
+
+    def test_runtime_permissions_are_read_only(self):
+        self.assertIn("permissions:", self.workflow)
+        self.assertIn("actions: read", self.workflow)
+        self.assertIn("contents: read", self.workflow)
 
     def test_environment_export_runs_as_a_package_module(self):
         self.assertIn("run: python -m utils.export_github_env", self.workflow)
