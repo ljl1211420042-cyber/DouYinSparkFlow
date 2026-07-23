@@ -16,6 +16,7 @@ os.environ.setdefault(
 CHAT_URL = (
     "https://creator.douyin.com/creator-micro/data/following/chat"
 )
+CREATOR_HOME_PREFIX = "https://creator.douyin.com/creator-micro/home"
 FRIENDS_TAB = 'role=tab[name="朋友私信"]'
 FRIEND_ITEM = (
     'xpath=//div[@role="tab-panel" and @aria-hidden="false"]'
@@ -43,6 +44,16 @@ def set_environment_secret(name, value, repository, environment):
     )
 
 
+def return_to_chat_after_login(page):
+    """QR login redirects to home; resume the chat-page verification."""
+    if not isinstance(page.url, str):
+        return False
+    if not page.url.startswith(CREATOR_HOME_PREFIX):
+        return False
+    page.goto(CHAT_URL, wait_until="domcontentloaded")
+    return True
+
+
 def capture_logged_in_cookies(timeout_seconds):
     with sync_playwright() as playwright:
         browser = playwright.chromium.launch(headless=False)
@@ -51,6 +62,7 @@ def capture_logged_in_cookies(timeout_seconds):
         page.goto(CHAT_URL)
         deadline = time.monotonic() + timeout_seconds
         while time.monotonic() < deadline:
+            return_to_chat_after_login(page)
             tab = page.locator(FRIENDS_TAB)
             if tab.count() and tab.first.is_visible():
                 tab.first.click()
