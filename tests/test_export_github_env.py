@@ -1,9 +1,15 @@
 import json
+import os
+import stat
 import tempfile
 import unittest
 from pathlib import Path
 
-from utils.export_github_env import build_environment, load_cookie_accounts
+from utils.export_github_env import (
+    build_environment,
+    load_cookie_accounts,
+    write_dotenv,
+)
 from utils.runtime_state import write_runtime_state
 
 
@@ -51,6 +57,13 @@ class BuildEnvironmentTests(unittest.TestCase):
         self.assertEqual(json.loads(result["COOKIES_123"])[0]["value"], "artifact")
         self.assertEqual(result["COOKIES_456"], "keep")
         self.assertNotIn("COOKIE_STATE_KEY", result)
+
+    def test_dotenv_is_written_with_owner_only_permissions(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / ".env"
+            write_dotenv(path, ["SECRET=value"])
+            self.assertEqual(path.read_text(encoding="utf-8"), "SECRET=value\n")
+            self.assertEqual(stat.S_IMODE(os.stat(path).st_mode), 0o600)
 
     def test_cached_cookie_state_overrides_matching_secret(self):
         result = build_environment(

@@ -47,6 +47,20 @@ class CookieStateWorkflowTests(unittest.TestCase):
         self.assertIn("permissions:", self.workflow)
         self.assertIn("actions: read", self.workflow)
         self.assertIn("contents: read", self.workflow)
+        self.assertNotIn("actions: write", self.workflow)
+
+    def test_rejects_rerun_attempts(self):
+        self.assertIn("GITHUB_RUN_ATTEMPT", self.workflow)
+        self.assertIn(
+            "Re-run attempts are disabled; dispatch a new validation run",
+            self.workflow,
+        )
+
+    def test_bootstrap_state_requires_validation_only(self):
+        self.assertIn(
+            "bootstrap_state requires validate_only=true",
+            self.workflow,
+        )
 
     def test_environment_export_runs_as_a_package_module(self):
         self.assertIn("run: python -m utils.export_github_env", self.workflow)

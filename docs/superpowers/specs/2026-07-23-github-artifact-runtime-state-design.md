@@ -114,6 +114,8 @@ bootstrap cookie because that could reintroduce stale ledger data.
 
 The workflow has a single concurrency group and does not cancel an in-progress
 run. Only one scheduled or manual send run can execute at a time.
+GitHub re-run attempts are rejected because they reuse the same run ID; a
+failed validation must be followed by a new workflow dispatch.
 
 For every target:
 
@@ -122,9 +124,11 @@ For every target:
 3. resolve the exact Douyin account and verify mutual-follow status;
 4. switch the conversation and require the right-side conversation title to
    equal the resolved nickname exactly;
-5. recheck the conversation title, send one message, and verify one new
-   outgoing message appeared; and
-6. atomically record the target as sent immediately after verification.
+5. create the uncertainty marker before entering the send critical section;
+6. recheck the conversation title, send one message, and wait for exactly one
+   new matching message inside the active conversation panel;
+7. atomically record the target as sent immediately after verification; and
+8. clear the uncertainty marker only after the durable write succeeds.
 
 No send operation is automatically retried. A failed target is reported and
 left unrecorded. If verification cannot prove whether the message was
@@ -147,6 +151,8 @@ sending. It never guesses in favor of sending.
 ### Validation and Activation
 
 The current scheduled workflow stays disabled during deployment.
+`bootstrap_state=true` is accepted only together with `validate_only=true`, so
+resetting the encrypted ledger can never send messages in the same run.
 
 1. Run the local bootstrap.
 2. Dispatch `validate_only=true`; it must load the friend list, send zero
@@ -195,6 +201,7 @@ encryption, artifact upload, and the two-step manual validation path.
 - Target cannot be uniquely resolved: skip and report.
 - Conversation title mismatch: skip and report.
 - Message acceptance cannot be verified: fail without retrying the send.
+- GitHub re-run attempt: fail before sending and require a new dispatch.
 - Partial task failure: encrypt and upload the latest valid atomic state.
 - Encryption or upload failure: fail the workflow and retain the prior
   artifact as the newest usable state.

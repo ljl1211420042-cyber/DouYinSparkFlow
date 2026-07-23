@@ -30,6 +30,20 @@ jobs:
     environment: user-data
     steps:
     - uses: actions/checkout@v4
+    - name: Enforce safe run mode
+      env:
+        VALIDATE_ONLY_INPUT: ${{ inputs.validate_only || 'false' }}
+        BOOTSTRAP_STATE_INPUT: ${{ inputs.bootstrap_state || 'false' }}
+      run: |
+        if [ "$GITHUB_RUN_ATTEMPT" != "1" ]; then
+          echo "Re-run attempts are disabled; dispatch a new validation run" >&2
+          exit 1
+        fi
+        if [ "$BOOTSTRAP_STATE_INPUT" = "true" ] && \
+          [ "$VALIDATE_ONLY_INPUT" != "true" ]; then
+          echo "bootstrap_state requires validate_only=true" >&2
+          exit 1
+        fi
     - name: Set up Python
       uses: actions/setup-python@v4
       with:
@@ -138,10 +152,3 @@ jobs:
       with:
         name: run-logs
         path: logs/
-  workflow-keepalive:
-    if: github.event_name == 'schedule'
-    runs-on: ubuntu-latest
-    permissions:
-      actions: write
-    steps:
-      - uses: liskin/gh-workflow-keepalive@v1

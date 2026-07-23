@@ -305,10 +305,21 @@ class ConversationSelectionTests(unittest.TestCase):
 
 class ExactMessageLocator:
     def __init__(self, counts):
-        self.counts = iter(counts)
+        self.counts = list(counts)
+        self.index = 0
 
     def count(self):
-        return next(self.counts)
+        count = self.counts[min(self.index, len(self.counts) - 1)]
+        self.index += 1
+        return count
+
+
+class ExactMessagePanel:
+    def __init__(self, messages):
+        self.messages = messages
+
+    def get_by_text(self, text, exact):
+        return self.messages
 
 
 class FakeChatInput:
@@ -328,17 +339,17 @@ class SendPage:
     def __init__(self, header_name, message_counts):
         self.header = ConversationHeaderLocator(header_name)
         self.messages = ExactMessageLocator(message_counts)
+        self.panel = ExactMessagePanel(self.messages)
         self.input = FakeChatInput()
 
     def locator(self, selector):
         if selector == tasks.ACTIVE_CONVERSATION_HEADER_SELECTOR:
             return self.header
+        if selector == tasks.ACTIVE_CONVERSATION_PANEL_SELECTOR:
+            return self.panel
         if selector == tasks.CHAT_INPUT_SELECTOR:
             return self.input
         return MarkerLocator(False)
-
-    def get_by_text(self, text, exact):
-        return self.messages
 
 
 class SendOnceTests(unittest.TestCase):
@@ -350,7 +361,23 @@ class SendOnceTests(unittest.TestCase):
     def test_missing_new_message_is_ambiguous_and_not_recorded(self):
         page = SendPage("Bruno", [2, 2])
         with self.assertRaisesRegex(RuntimeError, "无法确认"):
-            tasks.send_message_once(page, "Bruno", "古德猫宁")
+            tasks.send_message_once(
+                page,
+                "Bruno",
+                "古德猫宁",
+                timeout_ms=0,
+            )
+
+    def test_waits_for_message_render_before_confirming_send(self):
+        page = SendPage("Bruno", [2, 2, 3])
+        tasks.send_message_once(
+            page,
+            "Bruno",
+            "古德猫宁",
+            timeout_ms=100,
+            poll_seconds=0,
+        )
+        self.assertEqual(page.input.enter_presses, 1)
 
     def test_pending_targets_excludes_today_sent_ids(self):
         state = new_runtime_state()
@@ -421,6 +448,50 @@ class SendOnceTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             marker = Path(temp_dir) / "uncertain"
             tasks.mark_uncertain_send(marker)
+            self.assertTrue(marker.exists())
+
+    def test_send_transaction_marks_before_send_and_clears_after_persist(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            marker = Path(temp_dir) / "uncertain"
+            operations = []
+
+            def send():
+                self.assertTrue(marker.exists())
+                operations.append("send")
+
+            def persist():
+                self.assertTrue(marker.exists())
+                operations.append("persist")
+
+            tasks.run_send_transaction(send, persist, marker)
+
+            self.assertEqual(operations, ["send", "persist"])
+            self.assertFalse(marker.exists())
+
+    def test_send_transaction_keeps_marker_when_send_is_uncertain(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            marker = Path(temp_dir) / "uncertain"
+
+            def send():
+                self.assertTrue(marker.exists())
+                raise RuntimeError("connection lost after Enter")
+
+            with self.assertRaisesRegex(RuntimeError, "connection lost"):
+                tasks.run_send_transaction(send, lambda: None, marker)
+
+            self.assertTrue(marker.exists())
+
+    def test_send_transaction_keeps_marker_when_persistence_fails(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            marker = Path(temp_dir) / "uncertain"
+
+            def persist():
+                self.assertTrue(marker.exists())
+                raise OSError("state write failed")
+
+            with self.assertRaisesRegex(OSError, "state write failed"):
+                tasks.run_send_transaction(lambda: None, persist, marker)
+
             self.assertTrue(marker.exists())
 
 

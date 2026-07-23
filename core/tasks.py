@@ -53,8 +53,13 @@ ACTIVE_CONVERSATION_HEADER_SELECTOR = (
     'strong[class*="box-header-name-"]'
 )
 CHAT_INPUT_SELECTOR = "xpath=//div[contains(@class, 'chat-input-')]"
+ACTIVE_CONVERSATION_PANEL_SELECTOR = (
+    "xpath=//div[contains(@class, 'chat-input-')]"
+    "/ancestor::div[.//strong[contains(@class, 'box-header-name-')]][1]"
+)
 FRIEND_LIST_RECOVERY_WAIT_MS = 15000
 CONVERSATION_SWITCH_TIMEOUT_MS = 5000
+SEND_VERIFICATION_TIMEOUT_MS = 5000
 
 
 class UncertainSendError(RuntimeError):
@@ -303,9 +308,18 @@ def resolve_target_symbol(target_name, targets, user_id_dict, mode):
     return matches[0]
 
 
-def send_message_once(page, expected_name, message):
+def send_message_once(
+    page,
+    expected_name,
+    message,
+    timeout_ms=SEND_VERIFICATION_TIMEOUT_MS,
+    poll_seconds=0.2,
+):
     ensure_active_conversation(page, expected_name)
-    exact_messages = page.get_by_text(message, exact=True)
+    conversation_panel = page.locator(
+        ACTIVE_CONVERSATION_PANEL_SELECTOR
+    )
+    exact_messages = conversation_panel.get_by_text(message, exact=True)
     before_count = exact_messages.count()
     chat_input = page.locator(CHAT_INPUT_SELECTOR)
     lines = message.split("\\n")
@@ -315,11 +329,16 @@ def send_message_once(page, expected_name, message):
             chat_input.press("Shift+Enter")
     ensure_active_conversation(page, expected_name)
     chat_input.press("Enter")
-    after_count = exact_messages.count()
-    if after_count != before_count + 1:
-        raise UncertainSendError(
-            f"无法确认给 {expected_name} 的消息只新增了一条"
-        )
+    deadline = time.monotonic() + timeout_ms / 1000
+    while True:
+        after_count = exact_messages.count()
+        if after_count == before_count + 1:
+            return
+        if time.monotonic() >= deadline:
+            raise UncertainSendError(
+                f"无法确认给 {expected_name} 的消息只新增了一条"
+            )
+        time.sleep(poll_seconds)
 
 
 def persist_verified_send(
@@ -342,6 +361,19 @@ def mark_uncertain_send(path):
     marker = Path(path)
     marker.parent.mkdir(parents=True, exist_ok=True)
     marker.touch(mode=0o600, exist_ok=True)
+
+
+def clear_uncertain_send(path):
+    if not path:
+        return
+    Path(path).unlink(missing_ok=True)
+
+
+def run_send_transaction(send_operation, persist_operation, marker_path):
+    mark_uncertain_send(marker_path)
+    send_operation()
+    persist_operation()
+    clear_uncertain_send(marker_path)
 
 
 def scroll_and_select_user(page, username, targets):
@@ -583,23 +615,23 @@ def do_user_task(
                     logger.debug(
                         f"账号 {username} 准备发送消息给好友 {target_name}：\n\t{message}"
                     )
-                    try:
-                        send_message_once(page, target_name, message)
-                    except UncertainSendError:
-                        mark_uncertain_send(
-                            config["runtimeStateUncertainMarker"]
-                        )
-                        raise
-
-                    persist_verified_send(
-                        runtime_state,
-                        unique_id,
-                        target_symbol,
-                        context.cookies(),
-                        datetime.now(
-                            ZoneInfo(config["ledgerTimezone"])
+                    run_send_transaction(
+                        lambda: send_message_once(
+                            page,
+                            target_name,
+                            message,
                         ),
-                        runtime_state_output,
+                        lambda: persist_verified_send(
+                            runtime_state,
+                            unique_id,
+                            target_symbol,
+                            context.cookies(),
+                            datetime.now(
+                                ZoneInfo(config["ledgerTimezone"])
+                            ),
+                            runtime_state_output,
+                        ),
+                        config["runtimeStateUncertainMarker"],
                     )
                     logger.debug(
                         f"账号 {username} 给好友 {target_name} 发送消息完成"

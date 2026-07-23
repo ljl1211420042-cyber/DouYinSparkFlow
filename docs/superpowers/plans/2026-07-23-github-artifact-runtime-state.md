@@ -1688,3 +1688,16 @@ Report:
 - local automation paused state; and
 - the remaining limitation that Douyin can still request a fresh QR login
   because GitHub runners change device and IP.
+
+## Pre-Merge Review Hardening Amendment
+
+The implementation review added these mandatory fail-closed controls:
+
+- arm `.runtime-state/uncertain` before entering the send critical section and
+  clear it only after message verification and atomic ledger persistence;
+- scope matching-message verification to the active conversation panel and
+  wait for the UI to render the new message;
+- reject `GITHUB_RUN_ATTEMPT > 1` because reruns reuse `GITHUB_RUN_ID`;
+- require `bootstrap_state=true` to be paired with `validate_only=true`;
+- remove the write-enabled third-party keepalive job; and
+- write `.env` with owner-only permissions.

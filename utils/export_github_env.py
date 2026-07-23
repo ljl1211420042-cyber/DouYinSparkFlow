@@ -65,6 +65,17 @@ def load_cookie_accounts(runtime_state_file, legacy_cookie_state_file):
     return load_cookie_state(legacy_cookie_state_file)
 
 
+def write_dotenv(path, lines):
+    descriptor = os.open(
+        os.fspath(path),
+        os.O_WRONLY | os.O_CREAT | os.O_TRUNC,
+        0o600,
+    )
+    os.fchmod(descriptor, 0o600)
+    with os.fdopen(descriptor, "w", encoding="utf-8") as dotenv_file:
+        dotenv_file.write("\n".join(lines) + "\n")
+
+
 def main() -> None:
     vars_raw = os.getenv("VARS_JSON", "{}")
     secrets_raw = os.getenv("SECRETS_JSON", "{}")
@@ -103,8 +114,7 @@ def main() -> None:
             append_github_env_block(env_file, key, value)
 
     dotenv_lines = [f"{key}={to_dotenv_value(value)}" for key, value in dotenv_map.items()]
-    with open(".env", "w", encoding="utf-8") as dotenv_file:
-        dotenv_file.write("\n".join(dotenv_lines) + "\n")
+    write_dotenv(".env", dotenv_lines)
 
     print(
         "Exported all variables from VARS_JSON and SECRETS_JSON; .env refreshed."
