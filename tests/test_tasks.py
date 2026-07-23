@@ -250,6 +250,55 @@ class FriendListEndMarkerTests(unittest.TestCase):
         )
 
 
+class ConversationHeaderLocator:
+    def __init__(self, text, visible=True):
+        self.text = text
+        self.visible = visible
+
+    @property
+    def first(self):
+        return self
+
+    def count(self):
+        return 1
+
+    def is_visible(self):
+        return self.visible
+
+    def wait_for(self, state, timeout):
+        if not self.visible:
+            raise PlaywrightTimeoutError("conversation header timeout")
+
+    def inner_text(self):
+        return self.text
+
+
+class ConversationHeaderPage:
+    def __init__(self, active_name):
+        self.header = ConversationHeaderLocator(active_name)
+
+    def locator(self, selector):
+        if selector == tasks.ACTIVE_CONVERSATION_HEADER_SELECTOR:
+            return self.header
+        return MarkerLocator(False)
+
+
+class ConversationSelectionTests(unittest.TestCase):
+    def test_rejects_mismatched_active_conversation(self):
+        page = ConversationHeaderPage("咸鱼.")
+
+        with self.assertRaisesRegex(RuntimeError, "会话切换失败"):
+            tasks.ensure_active_conversation(page, "Bruno")
+
+    def test_accepts_exact_active_conversation(self):
+        page = ConversationHeaderPage("Bruno")
+
+        self.assertEqual(
+            tasks.ensure_active_conversation(page, "Bruno"),
+            "Bruno",
+        )
+
+
 class DelayedAuthenticationPage(MarkerPage):
     def __init__(self):
         super().__init__(set())

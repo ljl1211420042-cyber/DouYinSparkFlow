@@ -39,7 +39,11 @@ EMPTY_FRIEND_LIST_SELECTOR = (
     'xpath=//div[@role="tab-panel" and @aria-hidden="false"]'
     '//*[contains(normalize-space(.), "还没有收到私信")]'
 )
+ACTIVE_CONVERSATION_HEADER_SELECTOR = (
+    'strong[class*="box-header-name-"]'
+)
 FRIEND_LIST_RECOVERY_WAIT_MS = 15000
+CONVERSATION_SWITCH_TIMEOUT_MS = 5000
 
 def handle_response(response: Response):
     """
@@ -239,6 +243,22 @@ def has_reached_friend_list_end(page, selector):
     return marker.count() > 0 and marker.first.is_visible()
 
 
+def ensure_active_conversation(page, expected_name):
+    """Refuse to send unless the right-side chat header matches exactly."""
+    header = page.locator(ACTIVE_CONVERSATION_HEADER_SELECTOR).first
+    header.wait_for(
+        state="visible",
+        timeout=CONVERSATION_SWITCH_TIMEOUT_MS,
+    )
+    active_name = header.inner_text().strip()
+    if active_name != expected_name:
+        raise RuntimeError(
+            "会话切换失败："
+            f"期望 {expected_name!r}，实际 {active_name!r}"
+        )
+    return active_name
+
+
 def scroll_and_select_user(page, username, targets):
     """尝试滚动并查找用户名"""
     target_selector = CONVERSATION_ITEM_SELECTOR
@@ -301,6 +321,7 @@ def scroll_and_select_user(page, username, targets):
 
                 if targetSymbol in targets:
                     element.click()
+                    ensure_active_conversation(page, targetName)
                     if matchMode == "short_id":
                         logger.debug(
                             f"账号 {username} 选中目标好友 {targetName} 准备开始交互"
