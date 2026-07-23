@@ -317,6 +317,13 @@ class ExactMessageLocator:
 class ExactMessagePanel:
     def __init__(self, messages):
         self.messages = messages
+        self.locator_selectors = []
+
+    def locator(self, selector):
+        self.locator_selectors.append(selector)
+        if selector == tasks.OUTGOING_MESSAGE_CONTAINER_SELECTOR:
+            return self
+        return MarkerLocator(False)
 
     def get_by_text(self, text, exact):
         return self.messages
@@ -357,6 +364,10 @@ class SendOnceTests(unittest.TestCase):
         page = SendPage("Bruno", [2, 3])
         tasks.send_message_once(page, "Bruno", "古德猫宁")
         self.assertEqual(page.input.enter_presses, 1)
+        self.assertEqual(
+            page.panel.locator_selectors,
+            [tasks.OUTGOING_MESSAGE_CONTAINER_SELECTOR],
+        )
 
     def test_missing_new_message_is_ambiguous_and_not_recorded(self):
         page = SendPage("Bruno", [2, 2])

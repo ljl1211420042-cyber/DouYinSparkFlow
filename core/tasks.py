@@ -57,6 +57,9 @@ ACTIVE_CONVERSATION_PANEL_SELECTOR = (
     "xpath=//div[contains(@class, 'chat-input-')]"
     "/ancestor::div[.//strong[contains(@class, 'box-header-name-')]][1]"
 )
+OUTGOING_MESSAGE_CONTAINER_SELECTOR = (
+    "div[class*='box-item-'][class*='is-me-']"
+)
 FRIEND_LIST_RECOVERY_WAIT_MS = 15000
 CONVERSATION_SWITCH_TIMEOUT_MS = 5000
 SEND_VERIFICATION_TIMEOUT_MS = 5000
@@ -319,7 +322,10 @@ def send_message_once(
     conversation_panel = page.locator(
         ACTIVE_CONVERSATION_PANEL_SELECTOR
     )
-    exact_messages = conversation_panel.get_by_text(message, exact=True)
+    outgoing_messages = conversation_panel.locator(
+        OUTGOING_MESSAGE_CONTAINER_SELECTOR
+    )
+    exact_messages = outgoing_messages.get_by_text(message, exact=True)
     before_count = exact_messages.count()
     chat_input = page.locator(CHAT_INPUT_SELECTOR)
     lines = message.split("\\n")
