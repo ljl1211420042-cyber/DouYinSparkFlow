@@ -3,6 +3,7 @@ import os
 import sys
 
 from utils.cookie_state import load_cookie_state, validate_cookie_state
+from utils.runtime_state import load_runtime_state
 
 
 RESERVED_SECRETS = {"COOKIE_STATE_KEY"}
@@ -58,11 +59,18 @@ def build_environment(vars_map, secrets_map, cookie_state) -> dict[str, str]:
     return environment
 
 
+def load_cookie_accounts(runtime_state_file, legacy_cookie_state_file):
+    if runtime_state_file:
+        return load_runtime_state(runtime_state_file)["accounts"]
+    return load_cookie_state(legacy_cookie_state_file)
+
+
 def main() -> None:
     vars_raw = os.getenv("VARS_JSON", "{}")
     secrets_raw = os.getenv("SECRETS_JSON", "{}")
     github_env = os.getenv("GITHUB_ENV")
-    cookie_state_file = os.getenv("COOKIE_STATE_FILE", "")
+    runtime_state_file = os.getenv("RUNTIME_STATE_FILE", "")
+    legacy_cookie_state_file = os.getenv("COOKIE_STATE_FILE", "")
 
     if not github_env:
         fail("GITHUB_ENV is not set")
@@ -84,7 +92,10 @@ def main() -> None:
 
     vars_keys = list(vars_map.keys())
     secrets_keys = list(secrets_map.keys())
-    cookie_state = load_cookie_state(cookie_state_file)
+    cookie_state = load_cookie_accounts(
+        runtime_state_file,
+        legacy_cookie_state_file,
+    )
     dotenv_map = build_environment(vars_map, secrets_map, cookie_state)
 
     with open(github_env, "a", encoding="utf-8") as env_file:

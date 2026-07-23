@@ -1,10 +1,57 @@
 import json
+import tempfile
 import unittest
+from pathlib import Path
 
-from utils.export_github_env import build_environment
+from utils.export_github_env import build_environment, load_cookie_accounts
+from utils.runtime_state import write_runtime_state
 
 
 class BuildEnvironmentTests(unittest.TestCase):
+    def test_runtime_state_file_supplies_account_cookie_map(self):
+        runtime_state = {
+            "version": 1,
+            "accounts": {
+                "COOKIES_123": [
+                    {
+                        "name": "sessionid",
+                        "value": "artifact",
+                        "domain": ".douyin.com",
+                        "path": "/",
+                    }
+                ]
+            },
+            "ledger": {},
+        }
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "runtime.json"
+            write_runtime_state(path, runtime_state)
+            accounts = load_cookie_accounts(str(path), "")
+        self.assertEqual(accounts, runtime_state["accounts"])
+
+    def test_runtime_accounts_override_only_matching_cookie_secret(self):
+        result = build_environment(
+            {},
+            {
+                "COOKIES_123": "bootstrap",
+                "COOKIES_456": "keep",
+                "COOKIE_STATE_KEY": "never-export",
+            },
+            {
+                "COOKIES_123": [
+                    {
+                        "name": "sessionid",
+                        "value": "artifact",
+                        "domain": ".douyin.com",
+                        "path": "/",
+                    }
+                ]
+            },
+        )
+        self.assertEqual(json.loads(result["COOKIES_123"])[0]["value"], "artifact")
+        self.assertEqual(result["COOKIES_456"], "keep")
+        self.assertNotIn("COOKIE_STATE_KEY", result)
+
     def test_cached_cookie_state_overrides_matching_secret(self):
         result = build_environment(
             {"TASKS": [{"unique_id": "123"}]},
